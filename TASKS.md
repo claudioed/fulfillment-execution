@@ -40,3 +40,15 @@ Build the full bounded context described in CLAUDE.md, in order. Keep
 ## Task 6 — Verify
 - build, vet, test (and `-race`) all green; gofmt clean. Confirm the four named
   invariants each have a red-path test. Do not stop until DoD in CLAUDE.md is met.
+
+## Task 7 — Cross-service integration (additive, see CLAUDE.md's new section)
+- Add `github.com/segmentio/kafka-go` dependency.
+- New Kafka inbound consumer on warehouse.work-planning.events, filtering
+  event_type "WorkReleased", mapping into a CreateTask call (see CLAUDE.md for
+  the path_id-prefix task-type derivation simplification — document it).
+- Idempotency via a new processed_events table (Postgres migration) / map
+  (memory); unit test double-delivery creates exactly one Task.
+- README gains an Integration section. REAL smoke test: with the shared broker
+  running (docker-compose.kafka.yml in ~/warehouse-systems), publish a
+  WorkReleased message and confirm a Task appears via the queue-depth endpoint.
+- Full existing suite (build/vet/test/-race) must still be green afterward.

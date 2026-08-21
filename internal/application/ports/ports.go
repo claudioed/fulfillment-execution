@@ -48,3 +48,12 @@ type EventPublisher interface {
 type Clock interface {
 	Now() time.Time
 }
+
+// ProcessedEvents tracks inbound event ids already applied, so an
+// at-least-once source (e.g. Kafka) can be consumed idempotently.
+type ProcessedEvents interface {
+	// MarkProcessed records eventId as processed if it is not already
+	// present. It returns true if this call newly recorded it, false if
+	// eventId was already marked processed.
+	MarkProcessed(ctx context.Context, eventId string) (bool, error)
+}

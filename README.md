@@ -72,6 +72,7 @@ migrate -path migrations -database "$DATABASE_URL" up
 |----------------|---------|-----------------------------------|
 | `HTTP_ADDR`    | `:8080` | HTTP listen address               |
 | `DATABASE_URL` | (unset) | Postgres DSN; unset selects memory adapters |
+| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list for the `WorkReleased` consumer |
 
 ## Tests
 
@@ -169,6 +170,76 @@ curl -sX POST localhost:8080/admin/expire-leases
 ```sh
 curl -s localhost:8080/healthz
 ```
+
+## Integration
+
+This service **consumes** `WorkReleased` events published by `wes-work-planning`
+and turns each one into a Task via the existing `CreateTask` use case — this
+is the intended use of that use case, so the Kafka consumer
+(`internal/adapters/inbound/kafka`) calls it directly rather than going
+through a new one.
+
+- **Topic**: `warehouse.work-planning.events` (consumer group `fulfillment-execution`)
+- **Broker**: `KAFKA_BROKERS` env var, default `localhost:9092`. This connects
+  to the shared broker started via `~/warehouse-systems/docker-compose.kafka.yml`;
+  this repo's own `docker-compose.yml` does not run Kafka.
+- **Client library**: `github.com/segmentio/kafka-go`.
+
+### Envelope
+
+Identical across all four warehouse-systems services:
+
+```json
+{
+  "event_id": "uuid-v4",
+  "event_type": "WorkReleased",
+  "occurred_at": "2026-08-21T22:00:00Z",
+  "source": "wes-work-planning",
+  "data": {"path_id": "...", "work_unit_id": "...", "cpt": "RFC3339", "ref": "..."}
+}
+```
+
+Messages whose `event_type` isn't `"WorkReleased"` are ignored.
+
+### Mapping (known simplification)
+
+`path_id` does not carry the task type in general. This integration assumes,
+as a simplification for this round, that `path_id` carries the task type as a
+string prefix: `"pick-*"` → Pick, `"pack-*"` → Pack, `"slam-*"` → SLAM;
+anything else defaults to **Pick**. The rest of the mapping:
+
+| WorkReleased field     | Task field                                          |
+|-------------------------|------------------------------------------------------|
+| `data.path_id` (prefix) | task type (Pick/Pack/SLAM, default Pick)              |
+| `data.work_unit_id`     | `ref`                                                 |
+| `data.cpt`               | `cpt`                                                 |
+| task type                | required capabilities (`pick`, `pack`, or `slam`)     |
+
+### Idempotency
+
+Kafka delivery is at-least-once. Before calling `CreateTask`, the consumer
+tries to record the event's `event_id` in a `processed_events` table
+(Postgres) or an in-memory set (no `DATABASE_URL`); if the id is already
+present, the message is skipped (and still acked/committed) instead of
+creating a duplicate Task. See
+`internal/adapters/inbound/kafka/consumer_test.go` —
+`TestHandleMessage_DoubleDeliveryCreatesExactlyOneTask`.
+
+### Smoke test
+
+With the shared broker running (`docker compose -f ~/warehouse-systems/docker-compose.kafka.yml up -d`)
+and this service running (`go run ./cmd/execution`):
+
+```sh
+docker exec -i warehouse-kafka kafka-console-producer.sh \
+  --broker-list localhost:9092 --topic warehouse.work-planning.events <<'EOF'
+{"event_id":"smoke-1","event_type":"WorkReleased","occurred_at":"2026-08-21T22:00:00Z","source":"wes-work-planning","data":{"path_id":"pick-smoke","work_unit_id":"wu-smoke-1","cpt":"2026-08-21T23:00:00Z","ref":"release-smoke"}}
+EOF
+
+curl -s localhost:8080/queues/PICK/depth
+```
+
+`depth` should have increased by 1.
 
 ## Invariants covered by failing-path tests
 
