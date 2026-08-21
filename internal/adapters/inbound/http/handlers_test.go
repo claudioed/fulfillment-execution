@@ -1,0 +1,214 @@
+package http_test
+
+import (
+	"bytes"
+	"encoding/json"
+	stdhttp "net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
+	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/domain/station"
+)
+
+func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *memory.PackageRepo, *memory.FixedClock) {
+	tasks := memory.NewTaskRepo()
+	stations := memory.NewStationRepo()
+	packages := memory.NewPackageRepo()
+	publisher := events.NewBufferedPublisher()
+	clock := memory.NewFixedClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
+
+	n := 0
+	newTaskId := func() shared.TaskId {
+		n++
+		return shared.TaskId([]byte{'t', byte('0' + n)})
+	}
+	newPackageId := func() shared.PackageId { return shared.PackageId("pkg-1") }
+
+	h := &http.Handlers{
+		CreateTask:    &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
+		ClaimNext:     &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
+		RenewLease:    &usecases.RenewLease{Tasks: tasks, Clock: clock},
+		CompleteTask:  &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
+		SealPackage:   &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
+		RunSlam:       &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
+		GetQueueDepth: &usecases.GetQueueDepth{Tasks: tasks},
+		ExpireLeases:  &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
+	}
+	return http.NewRouter(h), tasks, stations, packages, clock
+}
+
+func doJSON(t *testing.T, srv stdhttp.Handler, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var reader *bytes.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal request: %v", err)
+		}
+		reader = bytes.NewReader(b)
+	} else {
+		reader = bytes.NewReader(nil)
+	}
+	req := httptest.NewRequest(method, path, reader)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	return rec
+}
+
+func TestGetHealthz(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/healthz", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestPostTask_CreatesTaskInPool(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type":                 "PICK",
+		"cpt":                  time.Now().Add(time.Hour),
+		"orderRef":             "order-1",
+		"requiredCapabilities": []string{"pick"},
+	})
+	if rec.Code != stdhttp.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostClaimNext_LeasesTaskToStation(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pick")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostClaimNext_NoWorkReturns409(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	if rec.Code != stdhttp.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestFullPickLifecycle_ClaimThenComplete(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pick")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	var claimed struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&claimed)
+
+	completeRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/complete", map[string]any{"stationId": "s1"})
+	if completeRec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", completeRec.Code, completeRec.Body.String())
+	}
+
+	// No double-complete via the API.
+	secondRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/complete", map[string]any{"stationId": "s1"})
+	if secondRec.Code != stdhttp.StatusConflict {
+		t.Fatalf("expected 409 on double-complete, got %d", secondRec.Code)
+	}
+}
+
+func TestPackAndSlamLifecycle(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pack")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pack"},
+	})
+
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	var claimed struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
+
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+		"stationId": "s1", "contents": []string{"sku-1"},
+	})
+	if sealRec.Code != stdhttp.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", sealRec.Code, sealRec.Body.String())
+	}
+	var sealed struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(sealRec.Body).Decode(&sealed)
+
+	slamRec := doJSON(t, srv, stdhttp.MethodPost, "/packages/"+sealed.Id+"/slam", map[string]any{
+		"actualWeight": 2.0, "expectedWeight": 2.0,
+	})
+	if slamRec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", slamRec.Code, slamRec.Body.String())
+	}
+}
+
+func TestGetQueueDepth(t *testing.T) {
+	srv, _, _, _, clock := newTestServer()
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/queues/PICK/depth", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Depth int `json:"depth"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.Depth != 1 {
+		t.Fatalf("expected depth 1, got %d", resp.Depth)
+	}
+}
+
+func TestPostExpireLeases(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pick")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+
+	clock.Advance(usecases.DefaultLeaseDuration + time.Minute)
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/admin/expire-leases", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Freed int `json:"freed"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.Freed != 1 {
+		t.Fatalf("expected 1 freed task, got %d", resp.Freed)
+	}
+}
+
+func TestPostRenewLease_NotFoundOnUnknownTask(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/does-not-exist/renew-lease", map[string]any{"stationId": "s1"})
+	if rec.Code != stdhttp.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}

@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS domain_events;
+DROP TABLE IF EXISTS packages;
+DROP TABLE IF EXISTS tasks;
+DROP TABLE IF EXISTS stations;
