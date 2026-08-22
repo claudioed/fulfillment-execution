@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	stdhttp "net/http"
 	"net/http/httptest"
@@ -86,7 +87,7 @@ func TestPostTask_CreatesTaskInPool(t *testing.T) {
 
 func TestPostClaimNext_LeasesTaskToStation(t *testing.T) {
 	srv, _, stations, _, clock := newTestServer()
-	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pick")))
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
 	})
@@ -99,7 +100,7 @@ func TestPostClaimNext_LeasesTaskToStation(t *testing.T) {
 
 func TestPostClaimNext_NoWorkReturns409(t *testing.T) {
 	srv, _, stations, _, _ := newTestServer()
-	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pick")))
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 
 	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
 	if rec.Code != stdhttp.StatusConflict {
@@ -109,7 +110,7 @@ func TestPostClaimNext_NoWorkReturns409(t *testing.T) {
 
 func TestFullPickLifecycle_ClaimThenComplete(t *testing.T) {
 	srv, _, stations, _, clock := newTestServer()
-	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pick")))
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
 	})
@@ -134,7 +135,7 @@ func TestFullPickLifecycle_ClaimThenComplete(t *testing.T) {
 
 func TestPackAndSlamLifecycle(t *testing.T) {
 	srv, _, stations, _, clock := newTestServer()
-	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pack")))
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pack")))
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pack"},
 	})
@@ -185,7 +186,7 @@ func TestGetQueueDepth(t *testing.T) {
 
 func TestPostExpireLeases(t *testing.T) {
 	srv, _, stations, _, clock := newTestServer()
-	_ = stations.Save(nil, station.New("s1", shared.NewCapabilitySet("pick")))
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
 		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
 	})
@@ -236,7 +237,7 @@ func TestPostRegisterStation_CreatesStation(t *testing.T) {
 		t.Fatalf("unexpected response body: %+v", resp)
 	}
 
-	found, _ := stations.FindById(nil, "s1")
+	found, _ := stations.FindById(context.TODO(), "s1")
 	if found == nil {
 		t.Fatalf("expected station to be persisted")
 	}
