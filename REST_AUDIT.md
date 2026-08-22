@@ -312,3 +312,44 @@ which accurately documents "no security scheme" instead of leaving it
 undefined (undefined reads as an oversight to tooling; `[]` reads as a
 deliberate statement). This is a docs-only change (`openapi.yaml`); no
 Go code was touched to fix it.
+
+## Stage 4 — GitHub Actions: openapi-lint job (Spectral)
+
+Added `.spectral.yaml` (extends `spectral:oas`, escalates `operation-operationId`,
+`operation-description`, `operation-tags`, `info-description`,
+`oas3-api-servers` from warning to error) and a new `openapi-lint` job to
+`.github/workflows/ci.yml`, added alongside (not replacing) the existing
+`lint-test` and `mutation` jobs — neither was touched. It inherits the
+workflow-level `on:` block (push/PR to `main`, no `if:` skip condition), so
+it is a real blocking gate, matching `lint-test`.
+
+Local verification:
+```
+spectral lint openapi.yaml --ruleset .spectral.yaml --fail-severity=warn
+# → "No results with a severity of 'warn' or higher found!" (exit 0)
+python3 -c "import yaml; yaml.safe_load(open('.github/workflows/ci.yml'))"
+# → valid YAML
+```
+
+**Real GitHub Actions verification.** Task 11's own branch
+(`task-11-rest-api-hardening`) is a PR against `task-10-quality-engineering`
+(PR #2, stacked on the still-open PR #1), not `main` — so the workflow's
+`push`/`pull_request: branches: [main]` triggers don't fire on this PR
+automatically. To get the strongest verification the task calls for anyway,
+the workflow was manually dispatched on this branch
+(`gh workflow run ci.yml --ref task-11-rest-api-hardening`;
+`workflow_dispatch` also runs `mutation`, which is otherwise
+schedule/dispatch-only and not part of Task 11's gating) and watched to
+completion with `gh run watch --exit-status`:
+
+```
+✓ openapi-lint in 25s
+✓ lint-test in 2m27s
+✓ mutation in 54s
+```
+
+All three jobs green on GitHub's real runners
+(https://github.com/claudioed/fulfillment-execution/actions/runs/32578709734).
+Once PR #1 merges to `main` and PR #2 is retargeted/merged, the same
+`openapi-lint` job will run automatically on every future push/PR to `main`
+via the inherited trigger — no further wiring needed.
