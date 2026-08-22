@@ -126,3 +126,25 @@ Builds and pushes the existing repo-root Dockerfile to Docker Hub under the
 using GitHub Actions cache (type=gha) to speed up rebuilds. Requires the
 repo to have `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets configured
 (user-provided, not committed anywhere).
+
+## Task 14 — Architecture fitness tests (ArchUnit equivalent: arch-go)
+Full spec in ARCH_TEST_TASK.md at the repo root. Add
+internal/architecture/architecture_test.go using github.com/arch-go/arch-go
+to encode the hexagonal dependency rule as executable Go tests (domain
+depends on nothing internal, application depends only on domain, inbound and
+outbound adapters never depend on each other, only cmd/ wires everything).
+New arch-test CI job, added to docker-publish's needs list. Strictly
+additive -- do not touch existing production code; if a real architecture
+violation is found, report it explicitly rather than silently working around
+it. Do not stop until every requirement in ARCH_TEST_TASK.md is met.
+
+## Task 15 — Helm chart lint CI job
+Added a `helm-lint` job to .github/workflows/ci.yml using
+helm/chart-testing-action@v2.8.0 (`ct lint`) against
+charts/fulfillment-execution. Runs on every push/PR (no gating condition, always
+blocking), and wired into `docker-publish`'s `needs` list alongside the
+existing gates -- a chart that fails helm/Chart.yaml validation or YAML
+style rules never reaches Docker Hub either. Verified locally with
+`ct lint --charts charts/fulfillment-execution --validate-maintainers=false
+--check-version-increment=false` before pushing (chart-testing v3.14.0,
+yamllint installed via Homebrew).

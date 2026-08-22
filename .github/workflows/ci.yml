@@ -127,10 +127,28 @@ jobs:
       - name: Lint OpenAPI spec
         run: spectral lint openapi.yaml --ruleset .spectral.yaml --fail-severity=warn
 
+  helm-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+          check-latest: true
+      - uses: helm/chart-testing-action@v2.8.0
+      - name: Run chart-testing (lint)
+        run: ct lint --charts charts/fulfillment-execution --validate-maintainers=false --check-version-increment=false
+
   docker-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [lint, test, integration, openapi-lint]
+    needs: [lint, test, integration, openapi-lint, helm-lint]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
