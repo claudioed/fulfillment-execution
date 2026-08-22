@@ -19,7 +19,7 @@ func NewRouter(h *Handlers) *chi.Mux {
 	r.Post("/tasks/{id}/seal-package", h.PostSealPackage)
 	r.Post("/packages/{id}/slam", h.PostRunSlam)
 	r.Get("/queues/{taskType}/depth", h.GetQueueDepthHandler)
-	r.Post("/admin/expire-leases", h.PostExpireLeases)
+	r.Post("/tasks/expire-leases", h.PostExpireLeases)
 
 	return r
 }

@@ -79,13 +79,14 @@ WeightDiscrepancyDetected, LabelApplied, PackageDiverted.
 ## REST API (inbound adapter)
 
 - POST /tasks                                 -> CreateTask
+- POST /stations                              -> RegisterStation
 - POST /stations/{stationId}/claim-next       -> ClaimNext
 - POST /tasks/{id}/renew-lease                -> RenewLease
 - POST /tasks/{id}/complete                   -> CompleteTask
 - POST /tasks/{id}/seal-package               -> SealPackage
 - POST /packages/{id}/slam                    -> RunSlam
 - GET  /queues/{taskType}/depth               -> GetQueueDepth
-- POST /admin/expire-leases                   -> ExpireLeases
+- POST /tasks/expire-leases                   -> ExpireLeases
 - GET  /healthz
 
 JSON DTOs live in the http adapter; never leak domain structs.
