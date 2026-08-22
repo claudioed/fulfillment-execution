@@ -18,6 +18,7 @@ import (
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
+	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
@@ -68,7 +69,17 @@ func run() error {
 		processedEvents = postgres.NewProcessedEventsRepo(pool)
 	}
 
-	publisher := events.NewLogPublisher(nil)
+	var (
+		publisher      ports.EventPublisher
+		kafkaPublisher *outboundkafka.Publisher
+	)
+	if getenv("EVENT_PUBLISHER", "log") == "kafka" {
+		log.Printf("EVENT_PUBLISHER=kafka, publishing TaskCompleted to %s via %v", outboundkafka.Topic, kafkaBrokers)
+		kafkaPublisher = outboundkafka.NewPublisher(kafkaBrokers, taskRepo, uuidLike)
+		publisher = kafkaPublisher
+	} else {
+		publisher = events.NewLogPublisher(nil)
+	}
 	clock := memory.SystemClock{}
 
 	createTask := &usecases.CreateTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId}
@@ -89,6 +100,9 @@ func run() error {
 
 	consumer := inboundkafka.NewConsumer(kafkaBrokers, workReleasedTopic, createTask, processedEvents, nil)
 	defer consumer.Close()
+	if kafkaPublisher != nil {
+		defer kafkaPublisher.Close()
+	}
 
 	go func() {
 		log.Printf("fulfillment-execution listening on %s", httpAddr)

@@ -59,3 +59,66 @@ one Task.
   `WorkReleased`-shaped message via `kafka-console-producer.sh` (or a small Go
   one-off) to `warehouse.work-planning.events` and confirm a new Task appears
   via `GET /queues/{taskType}/depth` before declaring done.
+
+---
+
+## Task 8 — Publish TaskCompleted (additive, do NOT touch existing domain code)
+
+This service now ALSO PUBLISHES `TaskCompleted` to close the control loop back
+to Work Planning (the drum-buffer-rope feedback edge: Execution -> Orchestration).
+Strictly additive: a new outbound adapter hook, no change to existing
+aggregates, invariants, or use cases (including `CompleteTask` itself — do not
+alter its logic, only add a publish call using its existing return value).
+
+### Envelope
+
+```json
+{
+  "event_id": "uuid-v4",
+  "event_type": "TaskCompleted",
+  "occurred_at": "2026-08-21T22:00:00Z",
+  "source": "fulfillment-execution",
+  "data": {"task_id": "...", "station_id": "...", "work_unit_id": "..."}
+}
+```
+
+`work_unit_id` is the completed Task's `OrderRef()` — recall from Task 7 that
+`WorkReleased.data.work_unit_id` was mapped into the Task's `ref` (OrderRef) at
+creation time. So `OrderRef()` on the completed Task IS the original
+`work_unit_id` from Work Planning. The domain event `TaskCompleted` itself only
+carries `TaskId`/`StationId` (no OrderRef) — so the Kafka publisher adapter
+must look the Task back up via the existing `TaskRepo` port to read its
+`OrderRef()` before publishing, exactly the same pattern already used in
+inventory-storage's Kafka publisher for `ReservationRevoked` (which backfills
+sku/quantity via a repo lookup since its domain event is thin too). Do not
+change the `TaskCompleted` domain event's fields — enrich only in the adapter.
+
+### Kafka
+
+- Reuse the SAME `internal/adapters/outbound/kafka/` publisher package added
+  for other purposes if one exists from a prior round, or create it now if this
+  is the first outbound Kafka adapter in this repo — check first, this repo may
+  currently only have the Task 7 CONSUMER, not yet a publisher.
+- Topic: `warehouse.fulfillment.events`.
+- Publish `TaskCompleted` when the existing `CompleteTask` use case succeeds.
+  Hook this the same way `EVENT_PUBLISHER` selection already works elsewhere in
+  this codebase (log default, kafka opt-in via `EVENT_PUBLISHER=kafka`) — if
+  this repo does not yet have that env-driven selection wired into
+  `CompleteTask`'s publisher, add it now, consistent with the existing
+  `ports.EventPublisher` interface used by other use cases.
+
+Downstream consumer: wes-work-planning calls its existing `RecordCompletion`
+use case with `WorkUnitId = data.work_unit_id`.
+
+### Definition of done for Task 8
+
+- New/extended Kafka publisher unit-tested for `TaskCompleted`: asserts the
+  envelope shape including the `work_unit_id` enrichment via `TaskRepo` lookup.
+- Existing full suite (`go build ./...`, `go vet ./...`, `go test ./...`,
+  `go test ./... -race`) still green, unchanged, including Task 7's consumer.
+- README's Integration section gains this new topic published, exact schema.
+- REAL smoke test: with the shared broker running and `EVENT_PUBLISHER=kafka`,
+  create a task, claim it, complete it via the running binary's HTTP API, and
+  confirm a `TaskCompleted` message with the correct `work_unit_id` lands on
+  `warehouse.fulfillment.events` via `kafka-console-consumer.sh` before
+  declaring done.

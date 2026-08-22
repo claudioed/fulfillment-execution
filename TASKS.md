@@ -52,3 +52,15 @@ Build the full bounded context described in CLAUDE.md, in order. Keep
   running (docker-compose.kafka.yml in ~/warehouse-systems), publish a
   WorkReleased message and confirm a Task appears via the queue-depth endpoint.
 - Full existing suite (build/vet/test/-race) must still be green afterward.
+
+## Task 8 — Publish TaskCompleted (additive, see INTEGRATION.md's Task 8 section)
+- Add/reuse a Kafka outbound publisher adapter (check if Task 7 added a
+  consumer-only package; this may be the first outbound publisher in this repo).
+- Publish TaskCompleted to warehouse.fulfillment.events when CompleteTask
+  succeeds, enriching with OrderRef via a TaskRepo lookup (the domain event
+  itself only has TaskId/StationId).
+- Unit test the envelope shape including the OrderRef enrichment.
+- README's Integration section gains this new topic. REAL smoke test: create,
+  claim, complete a task over the running binary's HTTP API with
+  EVENT_PUBLISHER=kafka and confirm the message lands on the topic.
+- Full existing suite (build/vet/test/-race), including Task 7, must stay green.

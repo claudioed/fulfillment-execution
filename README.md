@@ -72,7 +72,8 @@ migrate -path migrations -database "$DATABASE_URL" up
 |----------------|---------|-----------------------------------|
 | `HTTP_ADDR`    | `:8080` | HTTP listen address               |
 | `DATABASE_URL` | (unset) | Postgres DSN; unset selects memory adapters |
-| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list for the `WorkReleased` consumer |
+| `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list, used by both the `WorkReleased` consumer and the `TaskCompleted` publisher |
+| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` |
 
 ## Tests
 
@@ -177,9 +178,12 @@ This service **consumes** `WorkReleased` events published by `wes-work-planning`
 and turns each one into a Task via the existing `CreateTask` use case — this
 is the intended use of that use case, so the Kafka consumer
 (`internal/adapters/inbound/kafka`) calls it directly rather than going
-through a new one.
+through a new one. It also **publishes** `TaskCompleted` back to Work
+Planning to close the control loop (drum-buffer-rope feedback edge:
+Execution -> Orchestration).
 
-- **Topic**: `warehouse.work-planning.events` (consumer group `fulfillment-execution`)
+- **Consumed topic**: `warehouse.work-planning.events` (consumer group `fulfillment-execution`)
+- **Published topic**: `warehouse.fulfillment.events`
 - **Broker**: `KAFKA_BROKERS` env var, default `localhost:9092`. This connects
   to the shared broker started via `~/warehouse-systems/docker-compose.kafka.yml`;
   this repo's own `docker-compose.yml` does not run Kafka.
@@ -240,6 +244,68 @@ curl -s localhost:8080/queues/PICK/depth
 ```
 
 `depth` should have increased by 1.
+
+### Publishing TaskCompleted
+
+When `EVENT_PUBLISHER=kafka`, the outbound adapter
+(`internal/adapters/outbound/kafka`) publishes a `TaskCompleted` message to
+`warehouse.fulfillment.events` every time the `CompleteTask` use case
+succeeds. `CompleteTask` itself is unchanged — it still just calls
+`Publisher.Publish` with the domain event it always raised; only which
+`ports.EventPublisher` implementation is wired in at startup changes.
+
+The domain event `TaskCompleted` carries only `TaskId`/`StationId`. Work
+Planning's downstream `RecordCompletion` use case needs the original
+`work_unit_id` (the Task's `OrderRef`, set from `WorkReleased.data.work_unit_id`
+at creation time — see the consumer mapping above), so the publisher adapter
+looks the Task back up via `TaskRepo` before publishing and enriches the
+envelope with it. This mirrors the same repo-lookup-enrichment pattern
+inventory-storage's Kafka publisher uses for `ReservationRevoked`.
+
+#### Envelope
+
+```json
+{
+  "event_id": "uuid-v4",
+  "event_type": "TaskCompleted",
+  "occurred_at": "2026-08-21T22:00:00Z",
+  "source": "fulfillment-execution",
+  "data": {"task_id": "...", "station_id": "...", "work_unit_id": "..."}
+}
+```
+
+Downstream: `wes-work-planning` calls its `RecordCompletion` use case with
+`WorkUnitId = data.work_unit_id`.
+
+#### Smoke test
+
+With the shared broker running (`docker compose -f ~/warehouse-systems/docker-compose.kafka.yml up -d`)
+and this service running with Kafka publishing enabled:
+
+```sh
+EVENT_PUBLISHER=kafka go run ./cmd/execution
+```
+
+In another terminal, start a consumer on the published topic, then drive a
+task through the full lifecycle over HTTP:
+
+```sh
+docker exec -i warehouse-kafka kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --topic warehouse.fulfillment.events --from-beginning &
+
+curl -sX POST localhost:8080/tasks -H 'Content-Type: application/json' \
+  -d '{"type":"PICK","cpt":"2026-01-01T18:00:00Z","orderRef":"order-smoke-1","requiredCapabilities":["pick"]}'
+
+curl -sX POST localhost:8080/stations/station-smoke/claim-next -H 'Content-Type: application/json' \
+  -d '{"taskType":"PICK"}'
+# note the "id" field of the returned task as TASK_ID
+
+curl -sX POST localhost:8080/tasks/TASK_ID/complete -H 'Content-Type: application/json' \
+  -d '{"stationId":"station-smoke"}'
+```
+
+The consumer should print a `TaskCompleted` message whose `data.work_unit_id`
+is `"order-smoke-1"`.
 
 ## Invariants covered by failing-path tests
 
