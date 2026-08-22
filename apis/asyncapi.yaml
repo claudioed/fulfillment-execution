@@ -1,0 +1,575 @@
+asyncapi: 2.6.0
+
+info:
+  title: Fulfillment Execution Events API
+  version: "1.0.0"
+  description: >
+    Integration (domain) events published by the **Fulfillment Execution**
+    bounded context — the task-lifecycle core of the WES subdomain that turns
+    released work into completed physical operations (Pick, Pack, and SLAM —
+    Scan, Label, Apply, Manifest).
+
+
+    Every message on this API is a **CloudEvents 1.0** envelope in the
+    *structured* content mode (the whole event, envelope + data, is the message
+    payload as JSON). The CloudEvents `type` attribute encodes the DDD
+    coordinates of the fact as
+    `com.warehouse.<subdomain>.<bounded-context>.<entity>.<Event>`, e.g.
+    `com.warehouse.wes.fulfillment-execution.task.TaskClaimed`. This lets any
+    consumer route or filter purely on `type` without opening `data`.
+
+
+    Aggregates that raise these events: **Task** (Pick | Pack | SLAM; Pending ->
+    Claimed(leased) -> Completed) and **Package** (Pack-path output; the SLAM
+    weigh-check labels or diverts a carton). Read models such as queue depth by
+    task type are projections built downstream from these events, never state on
+    an aggregate.
+
+
+    This document is the full domain-event catalog for the bounded context.
+    Of these, only **TaskCompleted** is currently wired to the outbound Kafka
+    adapter (topic `warehouse.fulfillment.events`, enriched with `work_unit_id`)
+    per the service's Cross-service Integration contract — see each message's
+    description for its current publication status.
+  contact:
+    name: Fulfillment Execution Team
+    url: https://github.com/claudioed/fulfillment-execution
+    email: fulfillment-execution@warehouse-systems.internal
+  license:
+    name: Proprietary
+    url: https://github.com/claudioed/fulfillment-execution
+
+tags:
+  - name: fulfillment-execution
+    description: The Fulfillment Execution bounded context (WES subdomain core).
+  - name: task
+    description: Events raised by the Task aggregate (Pick | Pack | SLAM lifecycle).
+  - name: package
+    description: Events raised by the Package aggregate (Pack output and SLAM weigh-check).
+
+servers:
+  production:
+    url: kafka.warehouse-systems.internal:9092
+    protocol: kafka
+    description: >
+      Shared Kafka broker for warehouse-systems integration events. Configured
+      per service via the KAFKA_BROKERS environment variable.
+
+defaultContentType: application/cloudevents+json
+
+channels:
+  warehouse.fulfillment-execution.events:
+    description: >
+      All integration events emitted by the Fulfillment Execution service, keyed
+      by aggregate id. Consumers subscribe here and demultiplex on the
+      CloudEvents `type` attribute.
+    subscribe:
+      operationId: consumeFulfillmentExecutionEvents
+      summary: Consume Fulfillment Execution domain events.
+      description: >
+        Receive every CloudEvents-wrapped domain event published by this bounded
+        context. Route on the `type` attribute described in each message.
+      tags:
+        - name: fulfillment-execution
+      message:
+        oneOf:
+          - $ref: '#/components/messages/TaskCreated'
+          - $ref: '#/components/messages/TaskClaimed'
+          - $ref: '#/components/messages/LeaseExpired'
+          - $ref: '#/components/messages/TaskCompleted'
+          - $ref: '#/components/messages/ItemPicked'
+          - $ref: '#/components/messages/PackageSealed'
+          - $ref: '#/components/messages/WeightDiscrepancyDetected'
+          - $ref: '#/components/messages/LabelApplied'
+          - $ref: '#/components/messages/PackageDiverted'
+
+components:
+  messages:
+    TaskCreated:
+      name: TaskCreated
+      title: Task Created
+      summary: A new task entered the pool.
+      description: >
+        Raised when a new task (Pick | Pack | SLAM) is enqueued into the work
+        pool. Not yet wired to the outbound Kafka adapter — documented here as
+        part of the domain-event catalog, in-process only today.
+      contentType: application/cloudevents+json
+      tags:
+        - name: task
+      payload:
+        $ref: '#/components/schemas/TaskCreatedEvent'
+      examples:
+        - name: taskCreated
+          payload:
+            specversion: "1.0"
+            id: 0f2a1c7e-8b3d-4f6a-9c21-1a2b3c4d5e6f
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskCreated
+            subject: task-8a1f
+            time: "2026-08-22T14:00:00Z"
+            datacontenttype: application/json
+            data:
+              taskId: task-8a1f
+
+    TaskClaimed:
+      name: TaskClaimed
+      title: Task Claimed
+      summary: A station pulled a task from the pool.
+      description: >
+        Raised when a station claims (leases) the highest-priority matching
+        pending task. Not yet wired to the outbound Kafka adapter — documented here as part of the domain-event catalog, in-process only today.
+      contentType: application/cloudevents+json
+      tags:
+        - name: task
+      payload:
+        $ref: '#/components/schemas/TaskClaimedEvent'
+      examples:
+        - name: taskClaimed
+          payload:
+            specversion: "1.0"
+            id: 1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskClaimed
+            subject: task-8a1f
+            time: "2026-08-22T14:01:00Z"
+            datacontenttype: application/json
+            data:
+              taskId: task-8a1f
+              stationId: station-03
+
+    LeaseExpired:
+      name: LeaseExpired
+      title: Lease Expired
+      summary: An unconfirmed claim's lease timed out; the task returned to the pool.
+      description: >
+        Raised when a claim is neither renewed nor completed before its lease
+        expires. Not yet wired to the outbound Kafka adapter — documented here as part of the domain-event catalog, in-process only today.
+      contentType: application/cloudevents+json
+      tags:
+        - name: task
+      payload:
+        $ref: '#/components/schemas/LeaseExpiredEvent'
+      examples:
+        - name: leaseExpired
+          payload:
+            specversion: "1.0"
+            id: 2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.LeaseExpired
+            subject: task-8a1f
+            time: "2026-08-22T14:06:00Z"
+            datacontenttype: application/json
+            data:
+              taskId: task-8a1f
+
+    TaskCompleted:
+      name: TaskCompleted
+      title: Task Completed
+      summary: A station finished a claimed task.
+      description: >
+        Raised when the station that holds the active claim completes the
+        task. This is the one event currently wired to the outbound Kafka
+        adapter, published on topic `warehouse.fulfillment.events` enriched
+        with `work_unit_id` (the completed task's order reference) so Work
+        Planning can call RecordCompletion(workUnitId).
+      contentType: application/cloudevents+json
+      tags:
+        - name: task
+      payload:
+        $ref: '#/components/schemas/TaskCompletedEvent'
+      examples:
+        - name: taskCompleted
+          payload:
+            specversion: "1.0"
+            id: 3c4d5e6f-7a8b-4c9d-0e1f-2a3b4c5d6e7f
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskCompleted
+            subject: task-8a1f
+            time: "2026-08-22T14:04:00Z"
+            datacontenttype: application/json
+            data:
+              taskId: task-8a1f
+              stationId: station-03
+              workUnitId: wu-8a1f
+
+    ItemPicked:
+      name: ItemPicked
+      title: Item Picked
+      summary: A Pick task recorded an item retrieved into a tote.
+      description: >
+        Raised when a Pick task records a successful item retrieval.
+        Not yet wired to the outbound Kafka adapter — documented here as part of the domain-event catalog, in-process only today.
+      contentType: application/cloudevents+json
+      tags:
+        - name: task
+      payload:
+        $ref: '#/components/schemas/ItemPickedEvent'
+      examples:
+        - name: itemPicked
+          payload:
+            specversion: "1.0"
+            id: 4d5e6f7a-8b9c-4d0e-1f2a-3b4c5d6e7f80
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.ItemPicked
+            subject: task-8a1f
+            time: "2026-08-22T14:03:00Z"
+            datacontenttype: application/json
+            data:
+              taskId: task-8a1f
+
+    PackageSealed:
+      name: PackageSealed
+      title: Package Sealed
+      summary: A package's contents were scanned and the carton was sealed.
+      description: >
+        Raised when a Pack task seals a package after its contents are
+        scanned. Not yet wired to the outbound Kafka adapter — documented here as part of the domain-event catalog, in-process only today.
+      contentType: application/cloudevents+json
+      tags:
+        - name: package
+      payload:
+        $ref: '#/components/schemas/PackageSealedEvent'
+      examples:
+        - name: packageSealed
+          payload:
+            specversion: "1.0"
+            id: 5e6f7a8b-9c0d-4e1f-2a3b-4c5d6e7f8091
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.package.PackageSealed
+            subject: pkg-1029
+            time: "2026-08-22T14:10:00Z"
+            datacontenttype: application/json
+            data:
+              packageId: pkg-1029
+
+    WeightDiscrepancyDetected:
+      name: WeightDiscrepancyDetected
+      title: Weight Discrepancy Detected
+      summary: SLAM found actual weight outside tolerance.
+      description: >
+        Raised when the SLAM weigh-check finds the actual package weight
+        outside the accepted tolerance. Not yet wired to the outbound Kafka adapter — documented here as part of the domain-event catalog, in-process only today.
+      contentType: application/cloudevents+json
+      tags:
+        - name: package
+      payload:
+        $ref: '#/components/schemas/WeightDiscrepancyDetectedEvent'
+      examples:
+        - name: weightDiscrepancyDetected
+          payload:
+            specversion: "1.0"
+            id: 6f7a8b9c-0d1e-4f2a-3b4c-5d6e7f809112
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected
+            subject: pkg-1029
+            time: "2026-08-22T14:11:00Z"
+            datacontenttype: application/json
+            data:
+              packageId: pkg-1029
+              expectedWeight: 2.45
+              actualWeight: 3.10
+
+    LabelApplied:
+      name: LabelApplied
+      title: Label Applied
+      summary: SLAM passed the weigh-check and applied the shipping label.
+      description: >
+        Raised when the SLAM weigh-check passes and a shipping label is
+        applied to the package. Not yet wired to the outbound Kafka adapter — documented here as part of the domain-event catalog, in-process only today.
+      contentType: application/cloudevents+json
+      tags:
+        - name: package
+      payload:
+        $ref: '#/components/schemas/LabelAppliedEvent'
+      examples:
+        - name: labelApplied
+          payload:
+            specversion: "1.0"
+            id: 7a8b9c0d-1e2f-4a3b-4c5d-6e7f80911223
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.package.LabelApplied
+            subject: pkg-1029
+            time: "2026-08-22T14:12:00Z"
+            datacontenttype: application/json
+            data:
+              packageId: pkg-1029
+
+    PackageDiverted:
+      name: PackageDiverted
+      title: Package Diverted
+      summary: A package failed the SLAM weigh-check and was routed off the standard path.
+      description: >
+        Raised when a package fails the SLAM weigh-check and is diverted
+        instead of labeled. Not yet wired to the outbound Kafka adapter — documented here as part of the domain-event catalog, in-process only today.
+      contentType: application/cloudevents+json
+      tags:
+        - name: package
+      payload:
+        $ref: '#/components/schemas/PackageDivertedEvent'
+      examples:
+        - name: packageDiverted
+          payload:
+            specversion: "1.0"
+            id: 8b9c0d1e-2f3a-4b4c-5d6e-7f8091122334
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.package.PackageDiverted
+            subject: pkg-1029
+            time: "2026-08-22T14:13:00Z"
+            datacontenttype: application/json
+            data:
+              packageId: pkg-1029
+
+  schemas:
+    CloudEventBase:
+      type: object
+      description: CloudEvents 1.0 context attributes common to every message on this API.
+      required:
+        - specversion
+        - id
+        - source
+        - type
+      properties:
+        specversion:
+          type: string
+          description: The version of the CloudEvents specification the event uses.
+          enum:
+            - "1.0"
+        id:
+          type: string
+          description: Unique identifier of the event (UUID v4), unique per source.
+          format: uuid
+        source:
+          type: string
+          description: The context in which the event happened (the producing service).
+          format: uri-reference
+          example: /warehouse/fulfillment-execution
+        type:
+          type: string
+          description: >
+            DDD-coordinate event type
+            `com.warehouse.<subdomain>.<bounded-context>.<entity>.<Event>`.
+        subject:
+          type: string
+          description: The aggregate instance id this event is about.
+        time:
+          type: string
+          description: Timestamp of when the occurrence happened (RFC 3339).
+          format: date-time
+        datacontenttype:
+          type: string
+          description: Content type of the `data` value.
+          enum:
+            - application/json
+
+    TaskCreatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.task.TaskCreated
+            data:
+              type: object
+              required:
+                - taskId
+              properties:
+                taskId:
+                  type: string
+                  description: Identifier of the created task.
+
+    TaskClaimedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.task.TaskClaimed
+            data:
+              type: object
+              required:
+                - taskId
+                - stationId
+              properties:
+                taskId:
+                  type: string
+                  description: Identifier of the claimed task.
+                stationId:
+                  type: string
+                  description: Identifier of the station that claimed the task.
+
+    LeaseExpiredEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.task.LeaseExpired
+            data:
+              type: object
+              required:
+                - taskId
+              properties:
+                taskId:
+                  type: string
+                  description: Identifier of the task whose lease expired.
+
+    TaskCompletedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.task.TaskCompleted
+            data:
+              type: object
+              required:
+                - taskId
+                - stationId
+              properties:
+                taskId:
+                  type: string
+                  description: Identifier of the completed task.
+                stationId:
+                  type: string
+                  description: Identifier of the station that completed the task.
+                workUnitId:
+                  type: string
+                  description: >
+                    The completed task's order reference, carried as
+                    work_unit_id on the wire so Work Planning can correlate
+                    this event to the WorkUnit it released.
+
+    ItemPickedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.task.ItemPicked
+            data:
+              type: object
+              required:
+                - taskId
+              properties:
+                taskId:
+                  type: string
+                  description: Identifier of the Pick task that recorded the retrieval.
+
+    PackageSealedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.package.PackageSealed
+            data:
+              type: object
+              required:
+                - packageId
+              properties:
+                packageId:
+                  type: string
+                  description: Identifier of the sealed package.
+
+    WeightDiscrepancyDetectedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.package.WeightDiscrepancyDetected
+            data:
+              type: object
+              required:
+                - packageId
+                - expectedWeight
+                - actualWeight
+              properties:
+                packageId:
+                  type: string
+                  description: Identifier of the package under weigh-check.
+                expectedWeight:
+                  type: number
+                  format: double
+                  description: Expected package weight (kg).
+                actualWeight:
+                  type: number
+                  format: double
+                  description: Measured package weight (kg).
+
+    LabelAppliedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.package.LabelApplied
+            data:
+              type: object
+              required:
+                - packageId
+              properties:
+                packageId:
+                  type: string
+                  description: Identifier of the labeled package.
+
+    PackageDivertedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.package.PackageDiverted
+            data:
+              type: object
+              required:
+                - packageId
+              properties:
+                packageId:
+                  type: string
+                  description: Identifier of the diverted package.

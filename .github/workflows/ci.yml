@@ -114,7 +114,7 @@ jobs:
       - name: Mutation testing (domain layer)
         run: gremlins unleash ./internal/domain --workers 1 --timeout-coefficient 30
 
-  openapi-lint:
+  api-lint:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -125,7 +125,9 @@ jobs:
       - name: Install Spectral
         run: npm install -g @stoplight/spectral-cli
       - name: Lint OpenAPI spec
-        run: spectral lint openapi.yaml --ruleset .spectral.yaml --fail-severity=warn
+        run: spectral lint apis/openapi.yaml --ruleset .spectral.yaml --fail-severity=warn
+      - name: Lint AsyncAPI spec
+        run: spectral lint apis/asyncapi.yaml --ruleset .spectral.asyncapi.yaml --fail-severity=warn
 
   helm-lint:
     runs-on: ubuntu-latest
@@ -159,7 +161,7 @@ jobs:
   docker-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [lint, test, integration, openapi-lint, helm-lint, arch-test]
+    needs: [lint, test, integration, api-lint, helm-lint, arch-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

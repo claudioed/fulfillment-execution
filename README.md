@@ -112,7 +112,7 @@ duplicates the HTTP status code, `detail` is the specific error text for
 this occurrence, and `instance` is the request path that produced it
 (omitted for a validation error on a bare collection-create endpoint like
 `POST /tasks`, which has no path segment identifying a specific resource).
-See `openapi.yaml`'s `components/schemas/Problem` for the full schema.
+See `apis/openapi.yaml`'s `components/schemas/Problem` for the full schema.
 
 ### Create a task (put work in the pool)
 
