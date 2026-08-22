@@ -100,9 +100,9 @@ func run() error {
 	srv := &http.Server{Addr: httpAddr, Handler: router}
 
 	consumer := inboundkafka.NewConsumer(kafkaBrokers, workReleasedTopic, createTask, processedEvents, nil)
-	defer consumer.Close()
+	defer func() { _ = consumer.Close() }()
 	if kafkaPublisher != nil {
-		defer kafkaPublisher.Close()
+		defer func() { _ = kafkaPublisher.Close() }()
 	}
 
 	go func() {

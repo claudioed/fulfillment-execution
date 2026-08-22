@@ -69,3 +69,30 @@ func TestValidateAccept_AcceptsMatchingCapability(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestNew_Getters(t *testing.T) {
+	s := newPickStation()
+	if s.Id() != shared.StationId("st1") {
+		t.Fatalf("expected Id st1, got %s", s.Id())
+	}
+	if !s.Capabilities().Contains("pick") {
+		t.Fatalf("expected capabilities to contain pick")
+	}
+	if s.Occupant() != nil {
+		t.Fatalf("expected no occupant on a new station")
+	}
+}
+
+func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
+	occupant := station.OccupantId("worker-1")
+	s := station.Rehydrate(shared.StationId("st2"), shared.NewCapabilitySet("pack"), &occupant)
+	if s.Id() != shared.StationId("st2") {
+		t.Fatalf("expected Id st2, got %s", s.Id())
+	}
+	if !s.Capabilities().Contains("pack") {
+		t.Fatalf("expected capabilities to contain pack")
+	}
+	if !s.IsOccupied() || *s.Occupant() != occupant {
+		t.Fatalf("expected station occupied by %s, got %+v", occupant, s.Occupant())
+	}
+}

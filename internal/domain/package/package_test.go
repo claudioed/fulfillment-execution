@@ -96,3 +96,45 @@ func TestWeigh_RejectsReprocessingAfterDiverted(t *testing.T) {
 		t.Fatalf("expected ErrAlreadyProcessed, got %v", err)
 	}
 }
+
+func TestScanItem_RejectsAfterSeal(t *testing.T) {
+	p := newPackage()
+	_ = p.ScanItem("sku-1")
+	_ = p.Seal()
+	err := p.ScanItem("sku-2")
+	if !errors.Is(err, pack.ErrAlreadySealed) {
+		t.Fatalf("expected ErrAlreadySealed, got %v", err)
+	}
+	if len(p.ScannedContents()) != 1 {
+		t.Fatalf("expected scanned contents to remain unchanged, got %v", p.ScannedContents())
+	}
+}
+
+func TestNew_Getters(t *testing.T) {
+	p := newPackage()
+	if p.Id() != shared.PackageId("p1") {
+		t.Fatalf("expected Id p1, got %s", p.Id())
+	}
+	if p.OrderRef() != shared.OrderRef("order-1") {
+		t.Fatalf("expected OrderRef order-1, got %s", p.OrderRef())
+	}
+	if len(p.ScannedContents()) != 0 {
+		t.Fatalf("expected no scanned contents on a new package")
+	}
+}
+
+func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
+	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1", "sku-2"})
+	if p.Id() != shared.PackageId("p2") {
+		t.Fatalf("expected Id p2, got %s", p.Id())
+	}
+	if p.OrderRef() != shared.OrderRef("order-2") {
+		t.Fatalf("expected OrderRef order-2, got %s", p.OrderRef())
+	}
+	if p.Status() != pack.Sealed {
+		t.Fatalf("expected Sealed, got %s", p.Status())
+	}
+	if len(p.ScannedContents()) != 2 {
+		t.Fatalf("expected 2 scanned contents, got %v", p.ScannedContents())
+	}
+}

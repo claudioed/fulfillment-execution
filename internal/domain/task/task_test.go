@@ -184,6 +184,71 @@ func TestComplete_RejectsWhenLeaseExpired(t *testing.T) {
 	}
 }
 
+func TestRenewLease_RejectsAfterLeaseExpiredAndFreesTask(t *testing.T) {
+	tk := newPickTask()
+	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+	err := tk.RenewLease(shared.StationId("s1"), now.Add(2*time.Minute), time.Minute)
+	if !errors.Is(err, task.ErrNotClaimed) {
+		t.Fatalf("expected ErrNotClaimed after lease expiry, got %v", err)
+	}
+	if tk.Status() != task.Pending {
+		t.Fatalf("expected task freed back to Pending, got %s", tk.Status())
+	}
+}
+
+func TestRenewLease_RejectsOnCompletedTask(t *testing.T) {
+	tk := newPickTask()
+	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+	_ = tk.Complete(shared.StationId("s1"), now.Add(10*time.Second))
+	err := tk.RenewLease(shared.StationId("s1"), now.Add(20*time.Second), time.Minute)
+	if !errors.Is(err, task.ErrAlreadyCompleted) {
+		t.Fatalf("expected ErrAlreadyCompleted, got %v", err)
+	}
+}
+
+func TestClaim_RejectsOnCompletedTask(t *testing.T) {
+	tk := newPickTask()
+	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+	_ = tk.Complete(shared.StationId("s1"), now.Add(10*time.Second))
+	err := tk.Claim(shared.StationId("s2"), shared.NewCapabilitySet("pick"), now.Add(20*time.Second), time.Minute)
+	if !errors.Is(err, task.ErrAlreadyCompleted) {
+		t.Fatalf("expected ErrAlreadyCompleted, got %v", err)
+	}
+}
+
+func TestNew_Getters(t *testing.T) {
+	tk := newPickTask()
+	if tk.Id() != shared.TaskId("t1") {
+		t.Fatalf("expected Id t1, got %s", tk.Id())
+	}
+	if tk.Type() != task.Pick {
+		t.Fatalf("expected Type Pick, got %s", tk.Type())
+	}
+	if !tk.CPT().Time().Equal(now.Add(time.Hour)) {
+		t.Fatalf("expected CPT %v, got %v", now.Add(time.Hour), tk.CPT().Time())
+	}
+	if tk.OrderRef() != shared.OrderRef("order-1") {
+		t.Fatalf("expected OrderRef order-1, got %s", tk.OrderRef())
+	}
+	if !tk.RequiredCapabilities().Contains("pick") {
+		t.Fatalf("expected required capabilities to contain pick")
+	}
+}
+
+func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
+	lease := &task.Lease{StationId: shared.StationId("s1"), Expiry: now.Add(time.Minute)}
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Claimed, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), lease)
+	if tk.Id() != shared.TaskId("t2") {
+		t.Fatalf("expected Id t2, got %s", tk.Id())
+	}
+	if tk.Status() != task.Claimed {
+		t.Fatalf("expected Claimed, got %s", tk.Status())
+	}
+	if tk.Lease() == nil || tk.Lease().StationId != shared.StationId("s1") {
+		t.Fatalf("expected rehydrated lease owned by s1, got %+v", tk.Lease())
+	}
+}
+
 func TestIsAvailable(t *testing.T) {
 	tk := newPickTask()
 	if !tk.IsAvailable(now) {

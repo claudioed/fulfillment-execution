@@ -318,6 +318,441 @@ func TestRegisterStation_ReRegisteringUpdatesCapabilities(t *testing.T) {
 	}
 }
 
+func TestCreateTask_PropagatesSaveError(t *testing.T) {
+	h := newHarness()
+	tasks := newErrTaskRepo()
+	tasks.failSave = true
+	uc := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+
+	_, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}
+
+func TestCreateTask_PropagatesPublishError(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.CreateTask{Tasks: h.tasks, Publisher: &errPublisher{fail: true}, Clock: h.clock, NewId: idSeq("t")}
+
+	_, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
+func TestClaimNext_PropagatesStationLookupError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	stations := newErrStationRepo()
+	stations.failFindById = true
+
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: stations, Publisher: h.publisher, Clock: h.clock}
+	_, err := claim.Execute(ctx, "s1", task.Pick)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected station lookup error to propagate, got %v", err)
+	}
+}
+
+func TestClaimNext_PropagatesFindClaimableError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	tasks := newErrTaskRepo()
+	tasks.failFindClaimableByType = true
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	claim := &usecases.ClaimNext{Tasks: tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	_, err := claim.Execute(ctx, "s1", task.Pick)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected FindClaimableByType error to propagate, got %v", err)
+	}
+}
+
+func TestClaimNext_PropagatesSaveError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	tasks := newErrTaskRepo()
+	create := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	tasks.failSave = true
+	claim := &usecases.ClaimNext{Tasks: tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	_, err := claim.Execute(ctx, "s1", task.Pick)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}
+
+func TestClaimNext_PropagatesPublishError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: &errPublisher{fail: true}, Clock: h.clock}
+	_, err := claim.Execute(ctx, "s1", task.Pick)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
+func TestCompleteTask_PropagatesFindError(t *testing.T) {
+	h := newHarness()
+	tasks := newErrTaskRepo()
+	tasks.failFindById = true
+
+	complete := &usecases.CompleteTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock}
+	err := complete.Execute(context.Background(), "t1", "s1")
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected find error to propagate, got %v", err)
+	}
+}
+
+func TestCompleteTask_ReturnsErrTaskNotFound(t *testing.T) {
+	h := newHarness()
+	complete := &usecases.CompleteTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock}
+	err := complete.Execute(context.Background(), "missing", "s1")
+	if !errors.Is(err, usecases.ErrTaskNotFound) {
+		t.Fatalf("expected ErrTaskNotFound, got %v", err)
+	}
+}
+
+func TestCompleteTask_PropagatesSaveError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	tasks := newErrTaskRepo()
+	create := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	claim := &usecases.ClaimNext{Tasks: tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pick)
+
+	tasks.failSave = true
+	complete := &usecases.CompleteTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock}
+	err := complete.Execute(ctx, claimed.Id(), "s1")
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}
+
+func TestCompleteTask_PropagatesPublishError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pick)
+
+	complete := &usecases.CompleteTask{Tasks: h.tasks, Publisher: &errPublisher{fail: true}, Clock: h.clock}
+	err := complete.Execute(ctx, claimed.Id(), "s1")
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
+func TestExpireLeases_PropagatesFindAllClaimedError(t *testing.T) {
+	h := newHarness()
+	tasks := newErrTaskRepo()
+	tasks.failFindAllClaimed = true
+
+	sweep := &usecases.ExpireLeases{Tasks: tasks, Publisher: h.publisher, Clock: h.clock}
+	_, err := sweep.Execute(context.Background())
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected FindAllClaimed error to propagate, got %v", err)
+	}
+}
+
+func TestExpireLeases_PropagatesSaveError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	tasks := newErrTaskRepo()
+	create := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	claim := &usecases.ClaimNext{Tasks: tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, LeaseDuration: time.Minute}
+	_, _ = claim.Execute(ctx, "s1", task.Pick)
+	h.clock.Advance(2 * time.Minute)
+
+	tasks.failSave = true
+	sweep := &usecases.ExpireLeases{Tasks: tasks, Publisher: h.publisher, Clock: h.clock}
+	_, err := sweep.Execute(ctx)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}
+
+func TestExpireLeases_PropagatesPublishError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, LeaseDuration: time.Minute}
+	_, _ = claim.Execute(ctx, "s1", task.Pick)
+	h.clock.Advance(2 * time.Minute)
+
+	sweep := &usecases.ExpireLeases{Tasks: h.tasks, Publisher: &errPublisher{fail: true}, Clock: h.clock}
+	_, err := sweep.Execute(ctx)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
+func TestRegisterStation_PropagatesSaveError(t *testing.T) {
+	stations := newErrStationRepo()
+	stations.failSave = true
+	register := &usecases.RegisterStation{Stations: stations, Publisher: events.NewBufferedPublisher()}
+
+	_, err := register.Execute(context.Background(), "s1", []string{"pick"})
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}
+
+func TestRenewLease_PropagatesFindError(t *testing.T) {
+	tasks := newErrTaskRepo()
+	tasks.failFindById = true
+	renew := &usecases.RenewLease{Tasks: tasks, Clock: memory.NewFixedClock(epoch)}
+	err := renew.Execute(context.Background(), "t1", "s1")
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected find error to propagate, got %v", err)
+	}
+}
+
+func TestRenewLease_ReturnsErrTaskNotFound(t *testing.T) {
+	h := newHarness()
+	renew := &usecases.RenewLease{Tasks: h.tasks, Clock: h.clock}
+	err := renew.Execute(context.Background(), "missing", "s1")
+	if !errors.Is(err, usecases.ErrTaskNotFound) {
+		t.Fatalf("expected ErrTaskNotFound, got %v", err)
+	}
+}
+
+func TestRenewLease_PropagatesSaveError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	tasks := newErrTaskRepo()
+	create := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	claim := &usecases.ClaimNext{Tasks: tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, LeaseDuration: time.Minute}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pick)
+
+	tasks.failSave = true
+	renew := &usecases.RenewLease{Tasks: tasks, Clock: h.clock, LeaseDuration: time.Minute}
+	err := renew.Execute(ctx, claimed.Id(), "s1")
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}
+
+func TestRenewLease_PropagatesDomainError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pick)
+
+	renew := &usecases.RenewLease{Tasks: h.tasks, Clock: h.clock}
+	err := renew.Execute(ctx, claimed.Id(), "wrong-station")
+	if !errors.Is(err, task.ErrNotOwner) {
+		t.Fatalf("expected ErrNotOwner, got %v", err)
+	}
+}
+
+func TestRunSlam_PropagatesFindError(t *testing.T) {
+	packages := newErrPackageRepo()
+	packages.failFindById = true
+	slam := &usecases.RunSlam{Packages: packages, Publisher: events.NewBufferedPublisher(), Clock: memory.NewFixedClock(epoch)}
+	err := slam.Execute(context.Background(), "p1", 2.0, 2.0)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected find error to propagate, got %v", err)
+	}
+}
+
+func TestRunSlam_ReturnsErrPackageNotFound(t *testing.T) {
+	h := newHarness()
+	slam := &usecases.RunSlam{Packages: h.packages, Publisher: h.publisher, Clock: h.clock}
+	err := slam.Execute(context.Background(), "missing", 2.0, 2.0)
+	if !errors.Is(err, usecases.ErrPackageNotFound) {
+		t.Fatalf("expected ErrPackageNotFound, got %v", err)
+	}
+}
+
+func TestRunSlam_PropagatesWeighError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	p := pack.New("p1", "order-1")
+	_ = h.packages.Save(ctx, p)
+
+	slam := &usecases.RunSlam{Packages: h.packages, Publisher: h.publisher, Clock: h.clock}
+	err := slam.Execute(ctx, p.Id(), 2.0, 2.0)
+	if !errors.Is(err, pack.ErrNotSealed) {
+		t.Fatalf("expected ErrNotSealed, got %v", err)
+	}
+}
+
+func TestRunSlam_PropagatesSaveError(t *testing.T) {
+	ctx := context.Background()
+	packages := newErrPackageRepo()
+	p := pack.New("p1", "order-1")
+	_ = p.ScanItem("sku-1")
+	_ = p.Seal()
+	_ = packages.Save(ctx, p)
+
+	packages.failSave = true
+	slam := &usecases.RunSlam{Packages: packages, Publisher: events.NewBufferedPublisher(), Clock: memory.NewFixedClock(epoch)}
+	err := slam.Execute(ctx, p.Id(), 2.0, 2.0)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}
+
+func TestRunSlam_PropagatesPublishError_LabelApplied(t *testing.T) {
+	ctx := context.Background()
+	packages := memory.NewPackageRepo()
+	p := pack.New("p1", "order-1")
+	_ = p.ScanItem("sku-1")
+	_ = p.Seal()
+	_ = packages.Save(ctx, p)
+
+	slam := &usecases.RunSlam{Packages: packages, Publisher: &errPublisher{fail: true}, Clock: memory.NewFixedClock(epoch)}
+	err := slam.Execute(ctx, p.Id(), 2.0, 2.0)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
+func TestRunSlam_PropagatesPublishError_Diverted(t *testing.T) {
+	ctx := context.Background()
+	packages := memory.NewPackageRepo()
+	p := pack.New("p1", "order-1")
+	_ = p.ScanItem("sku-1")
+	_ = p.Seal()
+	_ = packages.Save(ctx, p)
+
+	slam := &usecases.RunSlam{Packages: packages, Publisher: &errPublisher{fail: true}, Clock: memory.NewFixedClock(epoch)}
+	err := slam.Execute(ctx, p.Id(), 2.0, 2.5)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
+func TestSealPackage_PropagatesFindError(t *testing.T) {
+	tasks := newErrTaskRepo()
+	tasks.failFindById = true
+	seal := &usecases.SealPackage{Tasks: tasks, Packages: memory.NewPackageRepo(), Publisher: events.NewBufferedPublisher(), Clock: memory.NewFixedClock(epoch), NewId: func() shared.PackageId { return "p1" }}
+	_, err := seal.Execute(context.Background(), "t1", "s1", []string{"sku-1"})
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected find error to propagate, got %v", err)
+	}
+}
+
+func TestSealPackage_ReturnsErrTaskNotFound(t *testing.T) {
+	h := newHarness()
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	_, err := seal.Execute(context.Background(), "missing", "s1", []string{"sku-1"})
+	if !errors.Is(err, usecases.ErrTaskNotFound) {
+		t.Fatalf("expected ErrTaskNotFound, got %v", err)
+	}
+}
+
+func TestSealPackage_ReturnsErrWrongTaskType(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	tk, _ := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	_, err := seal.Execute(ctx, tk.Id(), "s1", []string{"sku-1"})
+	if !errors.Is(err, usecases.ErrWrongTaskType) {
+		t.Fatalf("expected ErrWrongTaskType, got %v", err)
+	}
+}
+
+func TestSealPackage_ReturnsErrNotOwnerWhenUnclaimed(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	tk, _ := create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	_, err := seal.Execute(ctx, tk.Id(), "s1", []string{"sku-1"})
+	if !errors.Is(err, task.ErrNotOwner) {
+		t.Fatalf("expected ErrNotOwner, got %v", err)
+	}
+}
+
+func TestSealPackage_ReturnsErrNotOwnerForNonOwningStation(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	_, err := seal.Execute(ctx, claimed.Id(), "wrong-station", []string{"sku-1"})
+	if !errors.Is(err, task.ErrNotOwner) {
+		t.Fatalf("expected ErrNotOwner, got %v", err)
+	}
+}
+
+func TestSealPackage_PropagatesSealError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	_, err := seal.Execute(ctx, claimed.Id(), "s1", nil)
+	if !errors.Is(err, pack.ErrNoScannedContents) {
+		t.Fatalf("expected ErrNoScannedContents, got %v", err)
+	}
+}
+
+func TestSealPackage_PropagatesSaveError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	packages := newErrPackageRepo()
+	packages.failSave = true
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	_, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected save error to propagate, got %v", err)
+	}
+}
+
+func TestSealPackage_PropagatesPublishError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: &errPublisher{fail: true}, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	_, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
 // Proves RegisterStation and ClaimNext interoperate: a station that did not
 // exist before is registered over the use case, then immediately claims
 // against it successfully instead of failing with ErrStationNotFound.

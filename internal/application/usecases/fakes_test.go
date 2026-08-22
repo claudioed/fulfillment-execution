@@ -1,0 +1,123 @@
+package usecases_test
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
+	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/domain/station"
+	"github.com/claudioed/fulfillment-execution/internal/domain/task"
+)
+
+// errFake is the sentinel error every fake below returns when configured to fail.
+var errFake = errors.New("fake: forced failure")
+
+// errTaskRepo wraps a memory.TaskRepo, letting individual methods be forced
+// to fail so use-case error-propagation branches can be exercised.
+type errTaskRepo struct {
+	*memory.TaskRepo
+	failSave                bool
+	failFindById            bool
+	failFindClaimableByType bool
+	failFindAllClaimed      bool
+}
+
+func newErrTaskRepo() *errTaskRepo {
+	return &errTaskRepo{TaskRepo: memory.NewTaskRepo()}
+}
+
+func (r *errTaskRepo) Save(ctx context.Context, t *task.Task) error {
+	if r.failSave {
+		return errFake
+	}
+	return r.TaskRepo.Save(ctx, t)
+}
+
+func (r *errTaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
+	if r.failFindById {
+		return nil, errFake
+	}
+	return r.TaskRepo.FindById(ctx, id)
+}
+
+func (r *errTaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, now time.Time) ([]*task.Task, error) {
+	if r.failFindClaimableByType {
+		return nil, errFake
+	}
+	return r.TaskRepo.FindClaimableByType(ctx, taskType, now)
+}
+
+func (r *errTaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
+	if r.failFindAllClaimed {
+		return nil, errFake
+	}
+	return r.TaskRepo.FindAllClaimed(ctx)
+}
+
+// errStationRepo wraps a memory.StationRepo, letting individual methods be
+// forced to fail.
+type errStationRepo struct {
+	*memory.StationRepo
+	failSave     bool
+	failFindById bool
+}
+
+func newErrStationRepo() *errStationRepo {
+	return &errStationRepo{StationRepo: memory.NewStationRepo()}
+}
+
+func (r *errStationRepo) Save(ctx context.Context, s *station.Station) error {
+	if r.failSave {
+		return errFake
+	}
+	return r.StationRepo.Save(ctx, s)
+}
+
+func (r *errStationRepo) FindById(ctx context.Context, id shared.StationId) (*station.Station, error) {
+	if r.failFindById {
+		return nil, errFake
+	}
+	return r.StationRepo.FindById(ctx, id)
+}
+
+// errPackageRepo wraps a memory.PackageRepo, letting individual methods be
+// forced to fail.
+type errPackageRepo struct {
+	*memory.PackageRepo
+	failSave     bool
+	failFindById bool
+}
+
+func newErrPackageRepo() *errPackageRepo {
+	return &errPackageRepo{PackageRepo: memory.NewPackageRepo()}
+}
+
+func (r *errPackageRepo) Save(ctx context.Context, p *pack.Package) error {
+	if r.failSave {
+		return errFake
+	}
+	return r.PackageRepo.Save(ctx, p)
+}
+
+func (r *errPackageRepo) FindById(ctx context.Context, id shared.PackageId) (*pack.Package, error) {
+	if r.failFindById {
+		return nil, errFake
+	}
+	return r.PackageRepo.FindById(ctx, id)
+}
+
+// errPublisher forces Publish to fail, so use cases' event-publish error
+// branches can be exercised.
+type errPublisher struct {
+	fail bool
+}
+
+func (p *errPublisher) Publish(_ context.Context, _ ...shared.DomainEvent) error {
+	if p.fail {
+		return errFake
+	}
+	return nil
+}

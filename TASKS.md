@@ -80,3 +80,14 @@ Build the full bounded context described in CLAUDE.md, in order. Keep
 - REAL smoke test is the actual bar: POST /stations, POST /tasks, POST
   /stations/{id}/claim-next must return 200 with the claimed task, not the
   previous "station not found" error.
+
+## Task 10 — Quality engineering: linting, coverage, integration tests, mutation tests, CI
+Full spec in QUALITY.md at the repo root. Five ordered stages, each gates the
+next: (1) golangci-lint clean via the committed .golangci.yml, (2) unit test
+coverage >= 90% on internal/domain/... + internal/application/... combined,
+(3) real integration tests against live Postgres for every outbound Postgres
+adapter, (4) gremlins mutation testing on internal/domain/... only
+(exploratory, triaged not gated), (5) .github/workflows/ci.yml — lint+unit+
+integration blocking on every push/PR, mutation testing on a weekly schedule/
+manual dispatch only, never blocking PRs. Do not stop until every stage's
+Definition of Done in QUALITY.md is met, then report the final numbers.
