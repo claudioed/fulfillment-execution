@@ -103,3 +103,15 @@ schemas and real domain-grounded examples, (4) add a new openapi-lint job to
 the existing .github/workflows/ci.yml using Spectral, blocking on every
 push/PR. Do not stop until every stage's Definition of Done in
 REST_API_TASK.md is met, then report the final numbers.
+
+## Task 12 — CI workflow restructure (user-provided template)
+Full spec in CI_RESTRUCTURE_TASK.md at the repo root. Rewrite
+.github/workflows/ci.yml to the given 4-job structure (lint, test,
+integration, mutation) plus top-level permissions/concurrency/defaults,
+while preserving Task 11's openapi-lint job as a 5th job. Requires adapting
+placeholders to this repo's real values (postgres creds, DATABASE_URL,
+whether integration tests self-migrate, current gremlins version), not
+copy-pasting blindly. Every job's commands must be verified locally against
+this repo before pushing, and the real GitHub Actions run must be confirmed
+green via gh run watch. Do not stop until every requirement in
+CI_RESTRUCTURE_TASK.md is met.
