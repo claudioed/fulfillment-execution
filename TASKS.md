@@ -64,3 +64,19 @@ Build the full bounded context described in CLAUDE.md, in order. Keep
   claim, complete a task over the running binary's HTTP API with
   EVENT_PUBLISHER=kafka and confirm the message lands on the topic.
 - Full existing suite (build/vet/test/-race), including Task 7, must stay green.
+
+## Task 9 — Register-station HTTP endpoint (gap-fill, see INTEGRATION.md's Task 9)
+- Not Kafka-related. Fills a gap found during Task 8 smoke-testing: no way to
+  create a Station over HTTP, so claim-next always 404s on a fresh server.
+- New RegisterStation use case (idempotent: re-registering updates capabilities)
+  using the EXISTING Station aggregate and StationRepo port unchanged.
+- New POST /stations endpoint, DTOs, wired into main.go alongside ClaimNext's
+  existing StationRepo instance.
+- Unit test + httptest coverage, including proving a subsequent ClaimNext call
+  against a freshly registered station now succeeds.
+- README gains the new endpoint in its REST API table.
+- Full existing suite (build/vet/test/-race), including Tasks 0-8, must stay
+  green — Station aggregate and ClaimNext must be provably unmodified.
+- REAL smoke test is the actual bar: POST /stations, POST /tasks, POST
+  /stations/{id}/claim-next must return 200 with the claimed task, not the
+  previous "station not found" error.

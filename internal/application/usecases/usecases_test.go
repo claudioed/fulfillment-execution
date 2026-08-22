@@ -275,3 +275,75 @@ func TestGetQueueDepth_CountsPendingTasksOfType(t *testing.T) {
 		t.Fatalf("expected 2, got %d", got)
 	}
 }
+
+func TestRegisterStation_AddsStationToPool(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	register := &usecases.RegisterStation{Stations: h.stations, Publisher: h.publisher}
+
+	got, err := register.Execute(ctx, "s1", []string{"pick"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Id() != shared.StationId("s1") {
+		t.Fatalf("expected station s1, got %s", got.Id())
+	}
+
+	found, _ := h.stations.FindById(ctx, "s1")
+	if found == nil {
+		t.Fatalf("expected station to be persisted")
+	}
+	if !found.Capabilities().Contains("pick") {
+		t.Fatalf("expected persisted station to have pick capability")
+	}
+}
+
+func TestRegisterStation_ReRegisteringUpdatesCapabilities(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	register := &usecases.RegisterStation{Stations: h.stations, Publisher: h.publisher}
+
+	_, err := register.Execute(ctx, "s1", []string{"pick"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_, err = register.Execute(ctx, "s1", []string{"pick", "hazmat"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found, _ := h.stations.FindById(ctx, "s1")
+	if !found.Capabilities().Contains("hazmat") {
+		t.Fatalf("expected re-registration to update capabilities to include hazmat")
+	}
+}
+
+// Proves RegisterStation and ClaimNext interoperate: a station that did not
+// exist before is registered over the use case, then immediately claims
+// against it successfully instead of failing with ErrStationNotFound.
+func TestRegisterStation_ThenClaimNextSucceeds(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	register := &usecases.RegisterStation{Stations: h.stations, Publisher: h.publisher}
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+
+	if _, err := claim.Execute(ctx, "s1", task.Pick); !errors.Is(err, usecases.ErrStationNotFound) {
+		t.Fatalf("expected ErrStationNotFound before registration, got %v", err)
+	}
+
+	if _, err := register.Execute(ctx, "s1", []string{"pick"}); err != nil {
+		t.Fatalf("unexpected error registering station: %v", err)
+	}
+	if _, err := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick")); err != nil {
+		t.Fatalf("unexpected error creating task: %v", err)
+	}
+
+	got, err := claim.Execute(ctx, "s1", task.Pick)
+	if err != nil {
+		t.Fatalf("expected claim to succeed after registration, got %v", err)
+	}
+	if got.Status() != task.Claimed {
+		t.Fatalf("expected Claimed, got %s", got.Status())
+	}
+}

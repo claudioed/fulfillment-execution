@@ -107,6 +107,20 @@ curl -sX POST localhost:8080/tasks \
       }'
 ```
 
+### Register a station
+
+```sh
+curl -sX POST localhost:8080/stations \
+  -H 'Content-Type: application/json' \
+  -d '{"stationId": "station-1", "capabilities": ["pick"]}'
+```
+
+Creates a station with the given capabilities, or updates its capability set
+if `stationId` already exists (idempotent re-registration, e.g. recertifying
+a station). Closes the pull-dispatch gap for HTTP-only smoke testing: without
+this endpoint there was no way to create a station over HTTP, so `claimNext`
+below always failed with "station not found" against a freshly-started server.
+
 ### claimNext — a station pulls the best-fit pending task
 
 ```sh

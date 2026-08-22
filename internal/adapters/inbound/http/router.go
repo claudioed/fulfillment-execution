@@ -11,6 +11,7 @@ func NewRouter(h *Handlers) *chi.Mux {
 	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", h.GetHealthz)
+	r.Post("/stations", h.PostRegisterStation)
 	r.Post("/tasks", h.PostTask)
 	r.Post("/stations/{stationId}/claim-next", h.PostClaimNext)
 	r.Post("/tasks/{id}/renew-lease", h.PostRenewLease)

@@ -117,8 +117,93 @@ use case with `WorkUnitId = data.work_unit_id`.
 - Existing full suite (`go build ./...`, `go vet ./...`, `go test ./...`,
   `go test ./... -race`) still green, unchanged, including Task 7's consumer.
 - README's Integration section gains this new topic published, exact schema.
-- REAL smoke test: with the shared broker running and `EVENT_PUBLISHER=kafka`,
+- Do a REAL smoke test: with the shared broker running and `EVENT_PUBLISHER=kafka`,
   create a task, claim it, complete it via the running binary's HTTP API, and
   confirm a `TaskCompleted` message with the correct `work_unit_id` lands on
   `warehouse.fulfillment.events` via `kafka-console-consumer.sh` before
   declaring done.
+
+---
+
+## Task 9 — Register-station HTTP endpoint (gap-fill, NOT integration, additive)
+
+This is unrelated to Kafka/Tasks 7-8. It fills a pre-existing gap found while
+smoke-testing the pull-dispatch path end-to-end: the `Station` aggregate and
+`ports.StationRepo` already exist and are fully exercised by unit tests, but
+there is no way to create a Station over HTTP — so `POST
+/stations/{stationId}/claim-next` always fails with "station not found" against
+a freshly-started server, and the pull-dispatch flow cannot be smoke-tested via
+HTTP alone. Fix: add the missing use case + endpoint, matching every existing
+convention in this codebase. Strictly additive — do not touch the `Station`
+aggregate, `ClaimNext`, or any other existing use case; this only ADDS a new
+one alongside them.
+
+### What already exists (do not recreate)
+
+- `internal/domain/station/station.go`: `station.New(id shared.StationId,
+  capabilities shared.CapabilitySet) *Station` — already validates and
+  constructs correctly.
+- `internal/application/ports/ports.go`: `StationRepo` interface with `Save`
+  and `FindById` — already implemented by both the memory and postgres
+  adapters (`internal/adapters/outbound/memory/station_repo.go` and the
+  postgres equivalent).
+
+### What to add
+
+1. New use case `internal/application/usecases/register_station.go`:
+   `RegisterStation` struct (same shape as every other use case in this repo —
+   depends on `ports.StationRepo` and `ports.EventPublisher`), with an
+   `Execute(ctx, stationId string, capabilities []string) (*station.Station,
+   error)` method. It should be idempotent at the use-case level: registering
+   the same `stationId` twice should UPDATE the station's capability set (via
+   `station.New` + `Save`, which already overwrites in both adapters) rather
+   than error — a re-registration is a legitimate operational action (e.g.
+   recertifying a station), not a bug. Do NOT add a new domain event unless one
+   already fits the existing 9; if none fits, that's fine, this use case simply
+   doesn't publish (match whatever pattern `CreateTask` follows for its
+   optional publish, but don't force an event that doesn't belong).
+
+2. New HTTP endpoint: `POST /stations` (note: NOT nested under an existing
+   path, this creates a new top-level resource) with body
+   `{"stationId": "...", "capabilities": ["pick", ...]}`, returning 201 with
+   the created/updated station (id + capabilities + occupied:false). Add the
+   route to the existing chi router alongside the others, a request/response
+   DTO in `dto.go` following the exact naming convention already used there
+   (e.g. `registerStationRequestDTO`, `stationResponseDTO`), and wire domain
+   errors (e.g. empty capabilities, if that's a validation `station.New`
+   already enforces or should enforce — check first, don't invent a new
+   invariant if one doesn't already exist) to the existing HTTP error-mapping
+   pattern.
+
+3. Wire `RegisterStation` into `cmd/execution/main.go`'s composition root
+   alongside the other use cases, using the same `StationRepo` instance
+   `ClaimNext` already uses (so a registered station is immediately claimable).
+
+### Tests
+
+- Unit test `RegisterStation` against the in-memory `StationRepo`: registers a
+  new station, returns it correctly; re-registering the same id with different
+  capabilities updates it (assert via `FindById`); a subsequent `ClaimNext`
+  against that station's id succeeds where it previously would have failed
+  with `ErrStationNotFound` (proves the two use cases now interoperate).
+- httptest coverage for `POST /stations`, following the existing pattern in
+  `router_test.go`: happy path (201 + correct body), and whatever validation
+  error path already exists on `station.New` (if any) mapped to the correct
+  status.
+
+### Definition of done for Task 9
+
+- New use case + endpoint compile and are unit/httptest-covered as above.
+- Existing full suite (`go build ./...`, `go vet ./...`, `go test ./...`,
+  `go test ./... -race`) still green, unchanged, including Tasks 0-8 — this
+  proves the `Station` aggregate and `ClaimNext` were not modified.
+- README gains a short note: the new `POST /stations` endpoint added to the
+  REST API table, and a one-line mention that this closes the pull-dispatch
+  gap for HTTP-only smoke testing.
+- REAL smoke test, no shortcuts: with the compiled binary running (in-memory
+  adapters are fine, no Postgres/Kafka needed for this task), `POST /stations`
+  to register a station with `["pick"]` capabilities, `POST /tasks` to create a
+  Pick task, then `POST /stations/{stationId}/claim-next` and confirm it
+  actually returns the claimed task (200, not the previous `station not found`
+  error) — this is the exact gap that prompted this task, so proving it closes
+  is the actual bar for done, not just green tests.

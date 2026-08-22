@@ -58,6 +58,17 @@ type expireLeasesResponse struct {
 	Freed int `json:"freed"`
 }
 
+type registerStationRequest struct {
+	StationId    string   `json:"stationId"`
+	Capabilities []string `json:"capabilities"`
+}
+
+type stationResponse struct {
+	Id           string   `json:"id"`
+	Capabilities []string `json:"capabilities"`
+	Occupied     bool     `json:"occupied"`
+}
+
 type errorResponse struct {
 	Error string `json:"error"`
 }

@@ -31,14 +31,15 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 	newPackageId := func() shared.PackageId { return shared.PackageId("pkg-1") }
 
 	h := &http.Handlers{
-		CreateTask:    &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
-		ClaimNext:     &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
-		RenewLease:    &usecases.RenewLease{Tasks: tasks, Clock: clock},
-		CompleteTask:  &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
-		SealPackage:   &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
-		RunSlam:       &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
-		GetQueueDepth: &usecases.GetQueueDepth{Tasks: tasks},
-		ExpireLeases:  &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
+		CreateTask:      &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
+		ClaimNext:       &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
+		RenewLease:      &usecases.RenewLease{Tasks: tasks, Clock: clock},
+		CompleteTask:    &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
+		SealPackage:     &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
+		RunSlam:         &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
+		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: tasks},
+		ExpireLeases:    &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
+		RegisterStation: &usecases.RegisterStation{Stations: stations, Publisher: publisher},
 	}
 	return http.NewRouter(h), tasks, stations, packages, clock
 }
@@ -210,5 +211,60 @@ func TestPostRenewLease_NotFoundOnUnknownTask(t *testing.T) {
 	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/does-not-exist/renew-lease", map[string]any{"stationId": "s1"})
 	if rec.Code != stdhttp.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostRegisterStation_CreatesStation(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations", map[string]any{
+		"stationId":    "s1",
+		"capabilities": []string{"pick"},
+	})
+	if rec.Code != stdhttp.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Id           string   `json:"id"`
+		Capabilities []string `json:"capabilities"`
+		Occupied     bool     `json:"occupied"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Id != "s1" || resp.Occupied || len(resp.Capabilities) != 1 || resp.Capabilities[0] != "pick" {
+		t.Fatalf("unexpected response body: %+v", resp)
+	}
+
+	found, _ := stations.FindById(nil, "s1")
+	if found == nil {
+		t.Fatalf("expected station to be persisted")
+	}
+}
+
+// Proves the gap this task closes: a freshly registered station can
+// immediately be handed a task via claim-next over HTTP, where previously
+// there was no way to create the station at all and claim-next always 404'd.
+func TestPostRegisterStation_ThenClaimNextSucceeds(t *testing.T) {
+	srv, _, _, _, clock := newTestServer()
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations", map[string]any{
+		"stationId":    "s1",
+		"capabilities": []string{"pick"},
+	})
+	if rec.Code != stdhttp.StatusCreated {
+		t.Fatalf("expected 201 registering station, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+	if rec.Code != stdhttp.StatusCreated {
+		t.Fatalf("expected 201 creating task, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200 claiming against freshly registered station, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

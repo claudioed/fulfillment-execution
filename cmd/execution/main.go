@@ -85,14 +85,15 @@ func run() error {
 	createTask := &usecases.CreateTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId}
 
 	handlers := &inboundhttp.Handlers{
-		CreateTask:    createTask,
-		ClaimNext:     &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock},
-		RenewLease:    &usecases.RenewLease{Tasks: taskRepo, Clock: clock},
-		CompleteTask:  &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock},
-		SealPackage:   &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId},
-		RunSlam:       &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock},
-		GetQueueDepth: &usecases.GetQueueDepth{Tasks: taskRepo},
-		ExpireLeases:  &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock},
+		CreateTask:      createTask,
+		ClaimNext:       &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock},
+		RenewLease:      &usecases.RenewLease{Tasks: taskRepo, Clock: clock},
+		CompleteTask:    &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock},
+		SealPackage:     &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId},
+		RunSlam:         &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock},
+		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: taskRepo},
+		ExpireLeases:    &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock},
+		RegisterStation: &usecases.RegisterStation{Stations: stationRepo, Publisher: publisher},
 	}
 	router := inboundhttp.NewRouter(handlers)
 

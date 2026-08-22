@@ -11,19 +11,21 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
 // Handlers wires REST endpoints to use cases.
 type Handlers struct {
-	CreateTask    *usecases.CreateTask
-	ClaimNext     *usecases.ClaimNext
-	RenewLease    *usecases.RenewLease
-	CompleteTask  *usecases.CompleteTask
-	SealPackage   *usecases.SealPackage
-	RunSlam       *usecases.RunSlam
-	GetQueueDepth *usecases.GetQueueDepth
-	ExpireLeases  *usecases.ExpireLeases
+	CreateTask      *usecases.CreateTask
+	ClaimNext       *usecases.ClaimNext
+	RenewLease      *usecases.RenewLease
+	CompleteTask    *usecases.CompleteTask
+	SealPackage     *usecases.SealPackage
+	RunSlam         *usecases.RunSlam
+	GetQueueDepth   *usecases.GetQueueDepth
+	ExpireLeases    *usecases.ExpireLeases
+	RegisterStation *usecases.RegisterStation
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
@@ -54,6 +56,18 @@ func toPackageResponse(p *pack.Package) packageResponse {
 		OrderRef:        string(p.OrderRef()),
 		Status:          string(p.Status()),
 		ScannedContents: p.ScannedContents(),
+	}
+}
+
+func toStationResponse(s *station.Station) stationResponse {
+	caps := make([]string, 0, len(s.Capabilities()))
+	for c := range s.Capabilities() {
+		caps = append(caps, string(c))
+	}
+	return stationResponse{
+		Id:           string(s.Id()),
+		Capabilities: caps,
+		Occupied:     s.IsOccupied(),
 	}
 }
 
@@ -179,6 +193,22 @@ func (h *Handlers) PostExpireLeases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, expireLeasesResponse{Freed: freed})
+}
+
+// PostRegisterStation handles POST /stations.
+func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
+	var req registerStationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		return
+	}
+
+	s, err := h.RegisterStation.Execute(r.Context(), req.StationId, req.Capabilities)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, toStationResponse(s))
 }
 
 // GetHealthz handles GET /healthz.
