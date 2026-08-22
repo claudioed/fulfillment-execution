@@ -115,3 +115,14 @@ copy-pasting blindly. Every job's commands must be verified locally against
 this repo before pushing, and the real GitHub Actions run must be confirmed
 green via gh run watch. Do not stop until every requirement in
 CI_RESTRUCTURE_TASK.md is met.
+
+## Task 13 — Docker Hub publish job in CI
+Added a `docker-publish` job to .github/workflows/ci.yml, gated on
+`needs: [lint, test, integration, openapi-lint]` and
+`if: github.event_name == 'push' && github.ref == 'refs/heads/main'` (never
+runs on PRs, only after all quality gates pass on a real push to main).
+Builds and pushes the existing repo-root Dockerfile to Docker Hub under the
+`claudioed` namespace, tagged `latest` + short git SHA, linux/amd64 only,
+using GitHub Actions cache (type=gha) to speed up rebuilds. Requires the
+repo to have `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` secrets configured
+(user-provided, not committed anywhere).
