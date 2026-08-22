@@ -75,7 +75,11 @@ func toStationResponse(s *station.Station) stationResponse {
 func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 	var req createTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		writeBadRequestNoInstance(w, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequestNoInstance(w, msg)
 		return
 	}
 
@@ -86,10 +90,10 @@ func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 
 	t, err := h.CreateTask.Execute(r.Context(), task.Type(req.Type), shared.NewCPT(req.CPT), shared.OrderRef(req.OrderRef), shared.NewCapabilitySet(caps...))
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toTaskResponse(t))
+	writeCreated(w, "/tasks/"+string(t.Id()), toTaskResponse(t))
 }
 
 // PostClaimNext handles POST /stations/{stationId}/claim-next.
@@ -97,13 +101,17 @@ func (h *Handlers) PostClaimNext(w http.ResponseWriter, r *http.Request) {
 	stationId := chi.URLParam(r, "stationId")
 	var req claimNextRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequest(w, r, msg)
 		return
 	}
 
 	t, err := h.ClaimNext.Execute(r.Context(), shared.StationId(stationId), task.Type(req.TaskType))
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toTaskResponse(t))
@@ -114,12 +122,16 @@ func (h *Handlers) PostRenewLease(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
 	var req renewLeaseRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequest(w, r, msg)
 		return
 	}
 
 	if err := h.RenewLease.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -130,12 +142,16 @@ func (h *Handlers) PostCompleteTask(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
 	var req completeTaskRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequest(w, r, msg)
 		return
 	}
 
 	if err := h.CompleteTask.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId)); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -146,16 +162,20 @@ func (h *Handlers) PostSealPackage(w http.ResponseWriter, r *http.Request) {
 	taskId := chi.URLParam(r, "id")
 	var req sealPackageRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequest(w, r, msg)
 		return
 	}
 
 	p, err := h.SealPackage.Execute(r.Context(), shared.TaskId(taskId), shared.StationId(req.StationId), req.Contents)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toPackageResponse(p))
+	writeCreated(w, "/packages/"+string(p.Id()), toPackageResponse(p))
 }
 
 // PostRunSlam handles POST /packages/{id}/slam.
@@ -163,12 +183,12 @@ func (h *Handlers) PostRunSlam(w http.ResponseWriter, r *http.Request) {
 	packageId := chi.URLParam(r, "id")
 	var req runSlamRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		writeBadRequest(w, r, "invalid request body")
 		return
 	}
 
 	if err := h.RunSlam.Execute(r.Context(), shared.PackageId(packageId), req.ActualWeight, req.ExpectedWeight); err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -179,17 +199,17 @@ func (h *Handlers) GetQueueDepthHandler(w http.ResponseWriter, r *http.Request) 
 	taskType := chi.URLParam(r, "taskType")
 	depth, err := h.GetQueueDepth.Execute(r.Context(), task.Type(taskType))
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, queueDepthResponse{TaskType: taskType, Depth: depth})
 }
 
-// PostExpireLeases handles POST /admin/expire-leases.
+// PostExpireLeases handles POST /tasks/expire-leases.
 func (h *Handlers) PostExpireLeases(w http.ResponseWriter, r *http.Request) {
 	freed, err := h.ExpireLeases.Execute(r.Context())
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, expireLeasesResponse{Freed: freed})
@@ -199,16 +219,20 @@ func (h *Handlers) PostExpireLeases(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
 	var req registerStationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse{Error: "invalid request body"})
+		writeBadRequestNoInstance(w, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequestNoInstance(w, msg)
 		return
 	}
 
 	s, err := h.RegisterStation.Execute(r.Context(), req.StationId, req.Capabilities)
 	if err != nil {
-		writeError(w, err)
+		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, toStationResponse(s))
+	writeCreated(w, "/stations/"+string(s.Id()), toStationResponse(s))
 }
 
 // GetHealthz handles GET /healthz.

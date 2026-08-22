@@ -92,7 +92,27 @@ go test -tags integration ./internal/adapters/outbound/postgres/...
 
 ## API
 
-All endpoints accept/return JSON.
+All endpoints accept/return JSON. Every error response uses
+[RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) Problem Details
+(`Content-Type: application/problem+json`) instead of a bespoke shape:
+
+```json
+{
+  "type": "https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found",
+  "title": "Task not found",
+  "status": 404,
+  "detail": "usecases: task not found",
+  "instance": "/tasks/does-not-exist/renew-lease"
+}
+```
+
+`type` identifies the error category (does not need to resolve to a real
+page), `title` is a fixed human summary for that category, `status`
+duplicates the HTTP status code, `detail` is the specific error text for
+this occurrence, and `instance` is the request path that produced it
+(omitted for a validation error on a bare collection-create endpoint like
+`POST /tasks`, which has no path segment identifying a specific resource).
+See `openapi.yaml`'s `components/schemas/Problem` for the full schema.
 
 ### Create a task (put work in the pool)
 
@@ -177,7 +197,7 @@ curl -s localhost:8080/queues/PICK/depth
 ### Sweep expired leases (Clock-driven)
 
 ```sh
-curl -sX POST localhost:8080/admin/expire-leases
+curl -sX POST localhost:8080/tasks/expire-leases
 ```
 
 ### Health check

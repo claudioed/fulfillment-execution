@@ -91,3 +91,15 @@ adapter, (4) gremlins mutation testing on internal/domain/... only
 integration blocking on every push/PR, mutation testing on a weekly schedule/
 manual dispatch only, never blocking PRs. Do not stop until every stage's
 Definition of Done in QUALITY.md is met, then report the final numbers.
+
+## Task 11 — REST API hardening + OpenAPI 3.0.3 docs + Spectral CI gate
+Full spec in REST_API_TASK.md at the repo root. Four ordered stages: (1) audit
+this service's HTTP adapter against REST/HTTP Level 2 maturity and fix real
+violations (resource nouns, correct verbs/status codes, Location headers,
+input validation), (2) migrate all error responses from the bespoke
+{"error":...} shape to RFC 7807 application/problem+json, (3) write a very
+detailed openapi.yaml (3.0.3) covering every route with full request/response
+schemas and real domain-grounded examples, (4) add a new openapi-lint job to
+the existing .github/workflows/ci.yml using Spectral, blocking on every
+push/PR. Do not stop until every stage's Definition of Done in
+REST_API_TASK.md is met, then report the final numbers.

@@ -83,6 +83,29 @@ func TestPostTask_CreatesTaskInPool(t *testing.T) {
 	if rec.Code != stdhttp.StatusCreated {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
+	var created struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&created)
+	if got, want := rec.Header().Get("Location"), "/tasks/"+created.Id; got != want {
+		t.Fatalf("expected Location %q, got %q", want, got)
+	}
+}
+
+func TestPostTask_MissingRequiredField_Returns400(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"cpt":                  time.Now().Add(time.Hour),
+		"orderRef":             "order-1",
+		"requiredCapabilities": []string{"pick"},
+	})
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("expected 400 for missing type, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// POST /tasks has no path segment identifying a resource, so instance
+	// is omitted per REST_API_TASK.md's Stage 2 instance rule.
+	assertProblemDetails(t, rec, stdhttp.StatusBadRequest,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request", "")
 }
 
 func TestPostClaimNext_LeasesTaskToStation(t *testing.T) {
@@ -106,6 +129,9 @@ func TestPostClaimNext_NoWorkReturns409(t *testing.T) {
 	if rec.Code != stdhttp.StatusConflict {
 		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
 	}
+	assertProblemDetails(t, rec, stdhttp.StatusConflict,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/no-claimable-task",
+		"/stations/s1/claim-next")
 }
 
 func TestFullPickLifecycle_ClaimThenComplete(t *testing.T) {
@@ -131,6 +157,9 @@ func TestFullPickLifecycle_ClaimThenComplete(t *testing.T) {
 	if secondRec.Code != stdhttp.StatusConflict {
 		t.Fatalf("expected 409 on double-complete, got %d", secondRec.Code)
 	}
+	assertProblemDetails(t, secondRec, stdhttp.StatusConflict,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/task-already-completed",
+		"/tasks/"+claimed.Id+"/complete")
 }
 
 func TestPackAndSlamLifecycle(t *testing.T) {
@@ -156,6 +185,9 @@ func TestPackAndSlamLifecycle(t *testing.T) {
 		Id string `json:"id"`
 	}
 	_ = json.NewDecoder(sealRec.Body).Decode(&sealed)
+	if got, want := sealRec.Header().Get("Location"), "/packages/"+sealed.Id; got != want {
+		t.Fatalf("expected Location %q, got %q", want, got)
+	}
 
 	slamRec := doJSON(t, srv, stdhttp.MethodPost, "/packages/"+sealed.Id+"/slam", map[string]any{
 		"actualWeight": 2.0, "expectedWeight": 2.0,
@@ -194,7 +226,7 @@ func TestPostExpireLeases(t *testing.T) {
 
 	clock.Advance(usecases.DefaultLeaseDuration + time.Minute)
 
-	rec := doJSON(t, srv, stdhttp.MethodPost, "/admin/expire-leases", nil)
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/expire-leases", nil)
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -212,6 +244,44 @@ func TestPostRenewLease_NotFoundOnUnknownTask(t *testing.T) {
 	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/does-not-exist/renew-lease", map[string]any{"stationId": "s1"})
 	if rec.Code != stdhttp.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusNotFound,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found",
+		"/tasks/does-not-exist/renew-lease")
+}
+
+// assertProblemDetails checks rec's body against the RFC 7807 Problem
+// Details shape (type, title, status, detail, instance) and confirms
+// Content-Type is application/problem+json (not application/json).
+func assertProblemDetails(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int, wantType, wantInstance string) {
+	t.Helper()
+	if ct := rec.Header().Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("expected Content-Type application/problem+json, got %q", ct)
+	}
+	var body struct {
+		Type     string `json:"type"`
+		Title    string `json:"title"`
+		Status   int    `json:"status"`
+		Detail   string `json:"detail"`
+		Instance string `json:"instance"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal problem body: %v", err)
+	}
+	if body.Type != wantType {
+		t.Fatalf("expected type %q, got %q", wantType, body.Type)
+	}
+	if body.Title == "" {
+		t.Fatalf("expected a non-empty title")
+	}
+	if body.Status != wantStatus {
+		t.Fatalf("expected status %d in body, got %d", wantStatus, body.Status)
+	}
+	if body.Detail == "" {
+		t.Fatalf("expected a non-empty detail")
+	}
+	if body.Instance != wantInstance {
+		t.Fatalf("expected instance %q, got %q", wantInstance, body.Instance)
 	}
 }
 
@@ -236,10 +306,31 @@ func TestPostRegisterStation_CreatesStation(t *testing.T) {
 	if resp.Id != "s1" || resp.Occupied || len(resp.Capabilities) != 1 || resp.Capabilities[0] != "pick" {
 		t.Fatalf("unexpected response body: %+v", resp)
 	}
+	if got, want := rec.Header().Get("Location"), "/stations/s1"; got != want {
+		t.Fatalf("expected Location %q, got %q", want, got)
+	}
 
 	found, _ := stations.FindById(context.TODO(), "s1")
 	if found == nil {
 		t.Fatalf("expected station to be persisted")
+	}
+}
+
+func TestPostRegisterStation_MissingStationId_Returns400(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations", map[string]any{
+		"capabilities": []string{"pick"},
+	})
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("expected 400 for missing stationId, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostAdminExpireLeases_OldRoute_NoLongerExists(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/admin/expire-leases", nil)
+	if rec.Code != stdhttp.StatusNotFound {
+		t.Fatalf("expected the old /admin/expire-leases route to be gone (404), got %d", rec.Code)
 	}
 }
 

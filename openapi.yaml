@@ -1,0 +1,937 @@
+openapi: 3.0.3
+info:
+  title: Fulfillment Execution API
+  version: "1.0.0"
+  description: >
+    Fulfillment Execution is the task-lifecycle core bounded context for
+    Pick, Pack, and SLAM (Scan, Label, Apply, Manifest). It is downstream of
+    Work Planning, which releases work into this service (over Kafka, not
+    HTTP — see the repo README's Integration section), and this service in
+    turn issues commands to WCS/equipment as physical work is executed.
+
+
+    The defining design rule is **pull, not push**: a station calls
+    `claimNext(stationId, capabilities)` and the system selects the
+    highest-priority (earliest CPT — Committed Processing Time) pending
+    task the station is certified/equipped for. The system never names a
+    station in advance. Assignment is **at-most-once**, enforced by a
+    time-boxed **lease**: if a claim is not confirmed (renewed) or completed
+    before the lease expires, the task automatically returns to the pool
+    rather than vanishing.
+
+
+    This API's aggregates: **Task** (Pick | Pack | SLAM; Pending ->
+    Claimed(leased) -> Completed), **Station** (a work position with a
+    capability set, one occupant at a time), and **Package** (Pack path
+    output — an order becomes a sealed carton; the SLAM weigh-check applies
+    a shipping label or diverts the package on a weight discrepancy beyond
+    tolerance).
+
+
+    **Out of scope / boundary**: this service does not plan or release work
+    (that's Work Planning's job — it publishes `WorkReleased`, consumed here
+    over Kafka), does not manage inventory reservations (that's
+    Inventory Storage), and does not drive physical WCS/equipment directly
+    over this API (that's a separate command channel). This API is
+    HATEOAS-free by design (Richardson Maturity Level 2 is the target, not
+    Level 3) — clients are expected to know the URL structure, not discover
+    it via response links.
+  contact:
+    name: Fulfillment Execution
+    url: https://github.com/claudioed/fulfillment-execution
+servers:
+  - url: http://localhost:8080
+    description: Local development (in-memory adapters unless DATABASE_URL is set)
+
+# This service has no authentication/authorization layer today (see CLAUDE.md
+# / router.go — no auth middleware is wired in). Declared explicitly as no
+# security requirements, rather than left undefined, so tooling doesn't
+# flag it as an oversight.
+security: []
+
+tags:
+  - name: Tasks
+    description: >
+      The Task aggregate: units of Pick, Pack, or SLAM work. Covers the pool
+      (create), PULL dispatch (claim-next), lease lifecycle (renew, expire),
+      completion, and the read-model queue-depth projection.
+  - name: Stations
+    description: >
+      The Station aggregate: a work position with a capability set,
+      occupied by at most one worker/robot at a time. Covers registration
+      (which also serves as idempotent re-certification) and is the entry
+      point for PULL dispatch (`claim-next` is a Station action).
+  - name: Packages
+    description: >
+      The Package aggregate: Pack-path output. An order's scanned contents
+      become a sealed carton (`seal-package`, driven by a Pack task's active
+      claim), then the SLAM weigh-check either applies a shipping label or
+      diverts the package if the actual weight is outside tolerance of the
+      expected weight.
+  - name: System
+    description: Operational endpoints not tied to a domain aggregate.
+
+paths:
+  /tasks:
+    post:
+      operationId: createTask
+      tags: [Tasks]
+      summary: Create a task and place it in the pool
+      description: >
+        Puts a new unit of Pick, Pack, or SLAM work into the pending pool.
+        The task is not assigned to any station at creation time — PULL
+        dispatch (`POST /stations/{stationId}/claim-next`) is the only way
+        a task becomes claimed, consistent with this service's rule that
+        work is never pushed to a named station in advance. `cpt` (Committed
+        Processing Time) drives dispatch priority: `claimNext` always
+        selects the earliest-CPT pending task a station is equipped for.
+        This is not idempotent — each call creates a new task with a fresh,
+        server-generated id, even with an identical body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTaskRequest"
+            example:
+              type: PICK
+              cpt: "2026-01-01T18:00:00Z"
+              orderRef: order-42
+              requiredCapabilities: [pick]
+      responses:
+        "201":
+          description: Task created and placed in the pending pool.
+          headers:
+            Location:
+              description: Path of the newly created task, e.g. `/tasks/{id}`.
+              schema:
+                type: string
+                example: /tasks/20260101T120000.000000000
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+              example:
+                id: 20260101T120000.000000000
+                type: PICK
+                status: PENDING
+                cpt: "2026-01-01T18:00:00Z"
+                orderRef: order-42
+                requiredCapabilities: [pick]
+        "400":
+          $ref: "#/components/responses/BadRequestNoInstance"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations:
+    post:
+      operationId: registerStation
+      tags: [Stations]
+      summary: Register or re-register a station
+      description: >
+        Creates a station with the given capability set, or — if `stationId`
+        already exists — replaces its capability set (e.g. recertifying a
+        station for a new capability). This is deliberately idempotent by
+        client-supplied id: re-registering the same `stationId` upserts
+        rather than erroring or duplicating, which is what closes the
+        pull-dispatch gap for HTTP-only smoke testing (without this
+        endpoint there is no way to create a station over HTTP, so
+        `claim-next` against a freshly started server always 404s).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterStationRequest"
+            example:
+              stationId: station-1
+              capabilities: [pick]
+      responses:
+        "201":
+          description: Station registered (or its capability set updated).
+          headers:
+            Location:
+              description: Path of the registered station, e.g. `/stations/{id}`.
+              schema:
+                type: string
+                example: /stations/station-1
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationResponse"
+              example:
+                id: station-1
+                capabilities: [pick]
+                occupied: false
+        "400":
+          $ref: "#/components/responses/BadRequestNoInstance"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations/{stationId}/claim-next:
+    post:
+      operationId: claimNextTask
+      tags: [Stations, Tasks]
+      summary: PULL-dispatch the best-fit pending task to this station
+      description: >
+        Implements this service's core dispatch rule: **pull, not push**.
+        The station calls claimNext; the system — never the caller — selects
+        which task to hand it. Among Pending tasks of `taskType` that this
+        station's registered capabilities satisfy, the **earliest-CPT** task
+        is selected and leased to `stationId` for a fixed duration (5
+        minutes by default). Assignment is **at-most-once**: a task with an
+        active, unexpired lease cannot be claimed by anyone else, and this
+        endpoint will simply skip it and try the next-best candidate. If the
+        lease is not renewed or the task completed before it expires, the
+        task automatically returns to the pool (see
+        `POST /tasks/expire-leases`) rather than being lost. This call is
+        not idempotent in the way a PUT would be — every successful call
+        claims a *different* task (or the same task again only after its
+        prior lease was released); that's intended PULL semantics, not a
+        bug.
+      parameters:
+        - name: stationId
+          in: path
+          required: true
+          description: The station pulling work, e.g. as registered via `POST /stations`.
+          schema:
+            type: string
+            example: station-1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClaimNextRequest"
+            example:
+              taskType: PICK
+      responses:
+        "200":
+          description: The best-fit pending task was found and leased to this station.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskResponse"
+              example:
+                id: 20260101T120000.000000000
+                type: PICK
+                status: CLAIMED
+                cpt: "2026-01-01T18:00:00Z"
+                orderRef: order-42
+                requiredCapabilities: [pick]
+                leaseStationId: station-1
+                leaseExpiry: "2026-01-01T12:05:00Z"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/claim-next
+        "409":
+          description: >
+            No pending task of `taskType` exists that this station's
+            capabilities satisfy right now — the pool has nothing to
+            offer, not a transient error. Safe to retry later.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/no-claimable-task
+                title: No claimable task for station capabilities
+                status: 409
+                detail: "usecases: no claimable task for station capabilities"
+                instance: /stations/station-1/claim-next
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/renew-lease:
+    post:
+      operationId: renewLease
+      tags: [Tasks]
+      summary: Extend the active lease held by the claiming station
+      description: >
+        Pushes out a task's lease expiry so a station still actively working
+        it doesn't lose the claim to the automatic expiry sweep
+        (`POST /tasks/expire-leases`). Only the station that currently owns
+        the claim may renew it. Idempotent in effect: repeated calls simply
+        keep extending the same lease.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The task id, as returned by `POST /tasks` or a claim-next response.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenewLeaseRequest"
+            example:
+              stationId: station-1
+      responses:
+        "204":
+          description: Lease renewed. No response body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                title: Task not found
+                status: 404
+                detail: "usecases: task not found"
+                instance: /tasks/20260101T120000.000000000/renew-lease
+        "409":
+          description: >
+            The task has no active claim to renew (never claimed, its lease
+            already expired, or it was already completed), or `stationId`
+            does not own the active claim.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-claimed
+                title: Task is not currently claimed
+                status: 409
+                detail: "task: not claimed"
+                instance: /tasks/20260101T120000.000000000/renew-lease
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/complete:
+    post:
+      operationId: completeTask
+      tags: [Tasks]
+      summary: Complete a task on behalf of the station that claimed it
+      description: >
+        Finishes the task's lifecycle (Claimed -> Completed) and publishes
+        `TaskCompleted`. Only the owning station's claim may complete it,
+        and a completed task can never be completed again — this endpoint
+        enforces the no-double-complete invariant, returning `409` on a
+        repeat call rather than silently succeeding twice.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The task id.
+          schema:
+            type: string
+            example: 20260101T120000.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CompleteTaskRequest"
+            example:
+              stationId: station-1
+      responses:
+        "204":
+          description: Task completed. No response body.
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                title: Task not found
+                status: 404
+                detail: "usecases: task not found"
+                instance: /tasks/20260101T120000.000000000/complete
+        "409":
+          description: >
+            The task was already completed (double-complete, rejected), has
+            no active claim, or `stationId` does not own the active claim.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-already-completed
+                title: Task already completed
+                status: 409
+                detail: "task: already completed"
+                instance: /tasks/20260101T120000.000000000/complete
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/{id}/seal-package:
+    post:
+      operationId: sealPackage
+      tags: [Tasks, Packages]
+      summary: Scan contents and seal a Package for a Pack task's order
+      description: >
+        The Pack-path counterpart to `complete`: the station holding the
+        active claim on a Pack task scans the order's contents and seals
+        them into a brand-new Package resource (created by this call, not
+        pre-existing — see the `Location` header). The task itself is left
+        claimed; a separate `POST /tasks/{id}/complete` call finishes the
+        Pack task once the package is sealed. Requires at least one scanned
+        item — an empty `contents` array is a domain invariant violation
+        (`422`), not a malformed request (`400`), since the array is present
+        and well-formed, just semantically insufficient to seal.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The Pack task id whose active claim authorizes this seal.
+          schema:
+            type: string
+            example: 20260101T120100.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SealPackageRequest"
+            example:
+              stationId: station-2
+              contents: [sku-1, sku-2]
+      responses:
+        "201":
+          description: Package sealed.
+          headers:
+            Location:
+              description: Path of the newly created package, e.g. `/packages/{id}`.
+              schema:
+                type: string
+                example: /packages/20260101T120200.000000000
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PackageResponse"
+              example:
+                id: 20260101T120200.000000000
+                orderRef: order-42
+                status: SEALED
+                scannedContents: [sku-1, sku-2]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No task exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+                title: Task not found
+                status: 404
+                detail: "usecases: task not found"
+                instance: /tasks/20260101T120100.000000000/seal-package
+        "409":
+          description: >
+            `stationId` does not hold the active claim on this task (either
+            it was never claimed by this station, or the claim/lease is no
+            longer active).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-owner
+                title: Station does not own the active claim on this task
+                status: 409
+                detail: "task: station does not own the claim"
+                instance: /tasks/20260101T120100.000000000/seal-package
+        "422":
+          description: >
+            The task is not a Pack task, or `contents` was empty (nothing
+            was scanned, so there is nothing to seal).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-no-scanned-contents
+                title: Cannot seal a package without scanned contents
+                status: 422
+                detail: "package: cannot seal without scanned contents"
+                instance: /tasks/20260101T120100.000000000/seal-package
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /packages/{id}/slam:
+    post:
+      operationId: runSlam
+      tags: [Packages]
+      summary: Run the SLAM weigh-check on a sealed package
+      description: >
+        SLAM = Scan, Label, Apply, Manifest. Weighs a sealed package: if
+        `|actualWeight - expectedWeight|` is within tolerance (0.05, same
+        unit as the two weights — e.g. kilograms), a shipping label is
+        applied (`LabelApplied`); otherwise the package is diverted
+        (`WeightDiscrepancyDetected` + `PackageDiverted`) rather than
+        shipped with a wrong manifest. Idempotent in effect once processed:
+        a repeat call on an already-labeled-or-diverted package returns
+        `409` rather than re-processing it.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The package id, as returned by `POST /tasks/{id}/seal-package`.
+          schema:
+            type: string
+            example: 20260101T120200.000000000
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RunSlamRequest"
+            example:
+              actualWeight: 2.02
+              expectedWeight: 2.0
+      responses:
+        "204":
+          description: >
+            Weigh-check recorded (label applied or the package diverted —
+            both are successful outcomes of this call). No response body;
+            inspect `GET` on the package resource in a future version of
+            this API to see which outcome occurred (not currently exposed —
+            out of scope for this iteration).
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No package exists with this id.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-not-found
+                title: Package not found
+                status: 404
+                detail: "usecases: package not found"
+                instance: /packages/20260101T120200.000000000/slam
+        "409":
+          description: The package already had a label applied or was already diverted.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-already-processed
+                title: Package SLAM already processed
+                status: 409
+                detail: "package: SLAM already processed"
+                instance: /packages/20260101T120200.000000000/slam
+        "422":
+          description: The package has not been sealed yet (still Open).
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/package-not-sealed
+                title: Package must be sealed before SLAM
+                status: 422
+                detail: "package: must be sealed before SLAM"
+                instance: /packages/20260101T120200.000000000/slam
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /queues/{taskType}/depth:
+    get:
+      operationId: getQueueDepth
+      tags: [Tasks]
+      summary: Read the pending-task count for a process path (read model)
+      description: >
+        A projection, not a live domain query: returns how many tasks of
+        `taskType` currently sit Pending (not yet claimed) in the pool.
+        Read-only — this endpoint never mutates state. An unrecognized
+        `taskType` is not an error; it simply has a depth of `0`, since
+        this is a count over existing tasks rather than a lookup against a
+        fixed enum the server enforces.
+      parameters:
+        - name: taskType
+          in: path
+          required: true
+          description: The process path to count (conventionally PICK, PACK, or SLAM).
+          schema:
+            type: string
+            example: PICK
+      responses:
+        "200":
+          description: Current pending-task count for `taskType`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueueDepthResponse"
+              example:
+                taskType: PICK
+                depth: 3
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /tasks/expire-leases:
+    post:
+      operationId: expireLeases
+      tags: [Tasks]
+      summary: Sweep every Claimed task whose lease has expired back to Pending
+      description: >
+        The Clock-driven side of the at-most-once lease design: scans every
+        Claimed task and, for each whose lease expiry has passed without a
+        renewal or completion, frees it back to Pending (publishing
+        `LeaseExpired`) so the work is never silently lost. A collection-
+        level action on the `tasks` resource — not scoped to a single task
+        id — analogous to how `/tasks/{id}/complete` is a single-resource
+        action; deliberately not placed under an unscoped `/admin` path.
+        Idempotent: a second call simply frees nothing new if nothing else
+        has expired since the last sweep. Takes no request body.
+      responses:
+        "200":
+          description: Sweep completed; body reports how many tasks were freed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExpireLeasesResponse"
+              example:
+                freed: 2
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /healthz:
+    get:
+      operationId: getHealthz
+      tags: [System]
+      summary: Liveness check
+      description: >
+        Returns `200` if the HTTP server process is up and serving. This is
+        a liveness probe, not a readiness probe — it does not check
+        connectivity to Postgres or Kafka, and always returns `200` with no
+        body as long as the process can handle the request at all.
+      responses:
+        "200":
+          description: The service process is up.
+
+components:
+  schemas:
+    Problem:
+      type: object
+      description: >
+        RFC 7807 (Problem Details for HTTP APIs) error response, used for
+        every error this API returns. See
+        https://www.rfc-editor.org/rfc/rfc7807.
+      required: [type, title, status, detail]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: >
+            A URI identifying the error category. Does not need to resolve
+            to a real page — it is an identifier, unique per distinct error
+            category in this service.
+          example: https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found
+        title:
+          type: string
+          description: Fixed, category-level human-readable summary.
+          example: Task not found
+        status:
+          type: integer
+          format: int32
+          description: Duplicates the HTTP status code, per RFC 7807.
+          example: 404
+        detail:
+          type: string
+          description: The specific error message for this occurrence.
+          example: "usecases: task not found"
+        instance:
+          type: string
+          description: >
+            The request path that produced the error. Omitted for a
+            validation error on a bare collection-create endpoint
+            (`POST /tasks`, `POST /stations`) whose path has no segment
+            identifying a specific resource.
+          example: /tasks/20260101T120000.000000000/renew-lease
+
+    TaskType:
+      type: string
+      description: The process path a task belongs to.
+      enum: [PICK, PACK, SLAM]
+      example: PICK
+
+    TaskStatus:
+      type: string
+      description: Lifecycle state of a Task.
+      enum: [PENDING, CLAIMED, COMPLETED]
+      example: PENDING
+
+    PackageStatus:
+      type: string
+      description: Lifecycle state of a Package.
+      enum: [OPEN, SEALED, LABELED, DIVERTED]
+      example: SEALED
+
+    CreateTaskRequest:
+      type: object
+      required: [type, cpt, orderRef, requiredCapabilities]
+      properties:
+        type:
+          $ref: "#/components/schemas/TaskType"
+        cpt:
+          type: string
+          format: date-time
+          description: >
+            Committed Processing Time — the deadline driving dispatch
+            priority. `claimNext` always selects the earliest-CPT pending
+            task a station qualifies for.
+          example: "2026-01-01T18:00:00Z"
+        orderRef:
+          type: string
+          description: The originating order/work-unit reference (opaque to this service).
+          example: order-42
+        requiredCapabilities:
+          type: array
+          description: Capabilities a claiming station's capability set must be a superset of.
+          minItems: 1
+          items:
+            type: string
+            example: pick
+      example:
+        type: PICK
+        cpt: "2026-01-01T18:00:00Z"
+        orderRef: order-42
+        requiredCapabilities: [pick]
+
+    TaskResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Server-generated task id.
+          example: 20260101T120000.000000000
+        type:
+          $ref: "#/components/schemas/TaskType"
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        cpt:
+          type: string
+          format: date-time
+          example: "2026-01-01T18:00:00Z"
+        orderRef:
+          type: string
+          example: order-42
+        requiredCapabilities:
+          type: array
+          items:
+            type: string
+          example: [pick]
+        leaseStationId:
+          type: string
+          nullable: true
+          description: The station currently holding the active claim, if any.
+          example: station-1
+        leaseExpiry:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the active claim's lease expires, if any.
+          example: "2026-01-01T12:05:00Z"
+
+    ClaimNextRequest:
+      type: object
+      required: [taskType]
+      properties:
+        taskType:
+          $ref: "#/components/schemas/TaskType"
+      example:
+        taskType: PICK
+
+    RenewLeaseRequest:
+      type: object
+      required: [stationId]
+      properties:
+        stationId:
+          type: string
+          description: Must match the station that currently owns the active claim.
+          example: station-1
+      example:
+        stationId: station-1
+
+    CompleteTaskRequest:
+      type: object
+      required: [stationId]
+      properties:
+        stationId:
+          type: string
+          description: Must match the station that currently owns the active claim.
+          example: station-1
+      example:
+        stationId: station-1
+
+    SealPackageRequest:
+      type: object
+      required: [stationId]
+      properties:
+        stationId:
+          type: string
+          description: Must match the station that currently owns the active claim on the Pack task.
+          example: station-2
+        contents:
+          type: array
+          description: >
+            SKUs scanned for this package. An empty or omitted array is
+            accepted by request validation (it's well-formed JSON) but
+            rejected by the domain with a 422, since sealing requires at
+            least one scanned item.
+          items:
+            type: string
+            example: sku-1
+      example:
+        stationId: station-2
+        contents: [sku-1, sku-2]
+
+    PackageResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Server-generated package id.
+          example: 20260101T120200.000000000
+        orderRef:
+          type: string
+          example: order-42
+        status:
+          $ref: "#/components/schemas/PackageStatus"
+        scannedContents:
+          type: array
+          items:
+            type: string
+          example: [sku-1, sku-2]
+
+    RunSlamRequest:
+      type: object
+      required: [actualWeight, expectedWeight]
+      properties:
+        actualWeight:
+          type: number
+          format: double
+          description: Measured weight from the SLAM scale, in the same unit as expectedWeight (e.g. kilograms).
+          example: 2.02
+        expectedWeight:
+          type: number
+          format: double
+          description: Expected weight for this order's contents, in the same unit as actualWeight.
+          example: 2.0
+      example:
+        actualWeight: 2.02
+        expectedWeight: 2.0
+
+    QueueDepthResponse:
+      type: object
+      properties:
+        taskType:
+          type: string
+          example: PICK
+        depth:
+          type: integer
+          format: int32
+          description: Count of currently Pending tasks of this type.
+          example: 3
+
+    ExpireLeasesResponse:
+      type: object
+      properties:
+        freed:
+          type: integer
+          format: int32
+          description: Count of tasks freed back to Pending by this sweep.
+          example: 2
+
+    RegisterStationRequest:
+      type: object
+      required: [stationId, capabilities]
+      properties:
+        stationId:
+          type: string
+          description: Client-supplied station identifier; re-using an existing one upserts capabilities.
+          example: station-1
+        capabilities:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            example: pick
+      example:
+        stationId: station-1
+        capabilities: [pick]
+
+    StationResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          example: station-1
+        capabilities:
+          type: array
+          items:
+            type: string
+          example: [pick]
+        occupied:
+          type: boolean
+          description: Whether the station currently has an occupant checked in.
+          example: false
+
+  responses:
+    BadRequest:
+      description: >
+        The request body is malformed JSON, or a required field is missing.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+            title: The request is malformed or missing a required field
+            status: 400
+            detail: stationId is required
+            instance: /tasks/20260101T120000.000000000/complete
+
+    BadRequestNoInstance:
+      description: >
+        The request body is malformed JSON, or a required field is missing.
+        `instance` is omitted: this is a bare collection-create endpoint
+        with no path segment identifying a specific resource.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+            title: The request is malformed or missing a required field
+            status: 400
+            detail: type is required
+
+    InternalError:
+      description: An unexpected server-side failure (e.g. a repository or event-publisher error).
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+          example:
+            type: https://errors.fulfillment-execution.warehouse-systems.dev/internal-error
+            title: Internal server error
+            status: 500
+            detail: "pgx: connection refused"

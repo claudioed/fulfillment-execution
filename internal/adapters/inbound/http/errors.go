@@ -11,6 +11,20 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
+// problemBaseURI namespaces every RFC 7807 "type" URI this service mints.
+// These URIs are identifiers, not fetchable documents (RFC 7807 §3.1).
+const problemBaseURI = "https://errors.fulfillment-execution.warehouse-systems.dev/"
+
+// problem is the RFC 7807 (Problem Details for HTTP APIs) response body
+// used for every error response.
+type problem struct {
+	Type     string `json:"type"`
+	Title    string `json:"title"`
+	Status   int    `json:"status"`
+	Detail   string `json:"detail"`
+	Instance string `json:"instance,omitempty"`
+}
+
 // statusFor maps a typed domain/application error to an HTTP status code.
 func statusFor(err error) int {
 	switch {
@@ -42,15 +56,100 @@ func statusFor(err error) int {
 	}
 }
 
-func writeError(w http.ResponseWriter, err error) {
+// problemTypeAndTitle maps a typed domain/application error to its RFC 7807
+// "type" slug and category-level "title". One entry per distinct error
+// CATEGORY, mirroring statusFor's error set exactly (see REST_AUDIT.md).
+func problemTypeAndTitle(err error) (slug, title string) {
+	switch {
+	case errors.Is(err, usecases.ErrTaskNotFound):
+		return "task-not-found", "Task not found"
+	case errors.Is(err, usecases.ErrStationNotFound):
+		return "station-not-found", "Station not found"
+	case errors.Is(err, usecases.ErrPackageNotFound):
+		return "package-not-found", "Package not found"
+
+	case errors.Is(err, task.ErrAlreadyClaimed):
+		return "task-already-claimed", "Task already claimed by another station"
+	case errors.Is(err, task.ErrAlreadyCompleted):
+		return "task-already-completed", "Task already completed"
+	case errors.Is(err, task.ErrNotClaimed):
+		return "task-not-claimed", "Task is not currently claimed"
+	case errors.Is(err, task.ErrNotOwner):
+		return "task-not-owner", "Station does not own the active claim on this task"
+	case errors.Is(err, station.ErrOccupied):
+		return "station-occupied", "Station is already occupied"
+	case errors.Is(err, station.ErrNotOccupied):
+		return "station-not-occupied", "Station is not occupied"
+	case errors.Is(err, pack.ErrAlreadySealed):
+		return "package-already-sealed", "Package already sealed"
+	case errors.Is(err, pack.ErrAlreadyProcessed):
+		return "package-already-processed", "Package SLAM already processed"
+	case errors.Is(err, pack.ErrNotSealed):
+		return "package-not-sealed", "Package must be sealed before SLAM"
+	case errors.Is(err, usecases.ErrNoClaimableTask):
+		return "no-claimable-task", "No claimable task for station capabilities"
+
+	case errors.Is(err, task.ErrCapabilityMismatch):
+		return "task-capability-mismatch", "Station capabilities do not match task requirements"
+	case errors.Is(err, station.ErrCapabilityMismatch):
+		return "station-capability-mismatch", "Capabilities do not match"
+	case errors.Is(err, pack.ErrNoScannedContents):
+		return "package-no-scanned-contents", "Cannot seal a package without scanned contents"
+	case errors.Is(err, usecases.ErrWrongTaskType):
+		return "wrong-task-type", "Wrong task type for this operation"
+
+	default:
+		return "internal-error", "Internal server error"
+	}
+}
+
+// writeError maps a typed domain/application error to an RFC 7807 response,
+// using statusFor for the HTTP status (unchanged from before Stage 2) and
+// problemTypeAndTitle for the type/title pair. instance is the request path
+// that produced the error.
+func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	status := statusFor(err)
-	w.Header().Set("Content-Type", "application/json")
+	slug, title := problemTypeAndTitle(err)
+	writeProblem(w, status, slug, title, err.Error(), r.URL.Path)
+}
+
+// writeProblem writes an RFC 7807 (application/problem+json) response body.
+func writeProblem(w http.ResponseWriter, status int, slug, title, detail, instance string) {
+	w.Header().Set("Content-Type", "application/problem+json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(errorResponse{Error: err.Error()})
+	_ = json.NewEncoder(w).Encode(problem{
+		Type:     problemBaseURI + slug,
+		Title:    title,
+		Status:   status,
+		Detail:   detail,
+		Instance: instance,
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeCreated writes a 201 Created response with a Location header
+// pointing at the newly created resource.
+func writeCreated(w http.ResponseWriter, location string, v any) {
+	w.Header().Set("Location", location)
+	writeJSON(w, http.StatusCreated, v)
+}
+
+// writeBadRequest writes an RFC 7807 400 for a malformed or incomplete
+// request body (invalid JSON, or a decoded DTO missing a required field),
+// on an endpoint whose path identifies a resource (e.g. /tasks/{id}/...).
+func writeBadRequest(w http.ResponseWriter, r *http.Request, detail string) {
+	writeProblem(w, http.StatusBadRequest, "invalid-request", "The request is malformed or missing a required field", detail, r.URL.Path)
+}
+
+// writeBadRequestNoInstance is writeBadRequest for a bare collection-create
+// endpoint (POST /tasks, POST /stations) where the path has no segment
+// identifying a specific resource instance — RFC 7807 permits omitting
+// "instance" in that case (see REST_API_TASK.md Stage 2).
+func writeBadRequestNoInstance(w http.ResponseWriter, detail string) {
+	writeProblem(w, http.StatusBadRequest, "invalid-request", "The request is malformed or missing a required field", detail, "")
 }
