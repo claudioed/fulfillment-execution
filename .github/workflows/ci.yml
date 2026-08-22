@@ -74,6 +74,17 @@ jobs:
           name: coverage
           path: coverage.out
 
+  bdd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Run BDD (godog/Gherkin) acceptance tests
+        run: go test ./... -run TestFeatures -v
+
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -161,7 +172,7 @@ jobs:
   docker-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [lint, test, integration, api-lint, helm-lint, arch-test]
+    needs: [lint, test, bdd, integration, api-lint, helm-lint, arch-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read

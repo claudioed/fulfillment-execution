@@ -90,6 +90,33 @@ export DATABASE_URL="postgres://fulfillment:fulfillment@localhost:5432/fulfillme
 go test -tags integration ./internal/adapters/outbound/postgres/...
 ```
 
+## BDD / Acceptance tests
+
+Business-readable acceptance tests are written in Gherkin and executed with
+[godog](https://github.com/cucumber/godog), the official Cucumber
+implementation for Go. The feature files live under `features/`:
+
+| Feature file | Covers |
+| --- | --- |
+| `features/claim_next.feature` | `claimNext` pull dispatch: earliest-CPT selection, capability mismatch, at-most-once claiming |
+| `features/lease.feature` | Lease renewal before expiry, and lease expiry returning a Task to the pool |
+| `features/complete_task.feature` | Completing a claimed Task, and rejecting a non-owner |
+| `features/pack_slam.feature` | Sealing a Package, and the SLAM weigh-check applying a label vs diverting |
+
+The step definitions live in `features_test.go` at the repo root. They are
+black-box: each scenario spins up the real chi router (in-memory repositories,
+buffered event publisher, fixed Clock) behind an `httptest` server and drives
+it with real HTTP calls to the endpoints documented under [API](#api). Every
+scenario gets a fresh server and fresh state.
+
+Run them locally with:
+
+```sh
+go test ./... -run TestFeatures -v
+```
+
+CI runs the same command in the `bdd` job.
+
 ## API
 
 All endpoints accept/return JSON. Every error response uses
