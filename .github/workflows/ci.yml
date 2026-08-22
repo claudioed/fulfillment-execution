@@ -145,10 +145,21 @@ jobs:
       - name: Run chart-testing (lint)
         run: ct lint --charts charts/fulfillment-execution --validate-maintainers=false --check-version-increment=false
 
+  arch-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Architecture fitness tests
+        run: go test ./internal/architecture/... -v
+
   docker-publish:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    needs: [lint, test, integration, openapi-lint, helm-lint]
+    needs: [lint, test, integration, openapi-lint, helm-lint, arch-test]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
