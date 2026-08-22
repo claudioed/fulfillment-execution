@@ -1,0 +1,12 @@
+apiVersion: v2
+name: fulfillment-execution
+description: Fulfillment Execution — Pick/Pack/SLAM task lifecycle with pull-based claimNext dispatch and lease semantics
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/claudioed/fulfillment-execution
+keywords:
+  - ddd
+  - hexagonal-architecture
+  - warehouse-execution-system
+  - golang
