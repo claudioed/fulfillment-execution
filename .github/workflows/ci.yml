@@ -25,7 +25,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false          # golangci-lint-action manages its own cache
@@ -39,7 +39,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -68,7 +68,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage
@@ -79,7 +79,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Run BDD (godog/Gherkin) acceptance tests
@@ -103,7 +103,7 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Integration tests
@@ -123,7 +123,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Install gremlins
@@ -138,7 +138,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Install govulncheck
@@ -152,7 +152,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Install gremlins
@@ -182,7 +182,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
         with:
           version: v3.16.4
       - uses: actions/setup-python@v5
@@ -198,7 +198,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - name: Architecture fitness tests
@@ -275,6 +275,23 @@ jobs:
           docker buildx imagetools create \
             -t claudioed/fulfillment-execution:${{ steps.version.outputs.version }} \
             claudioed/fulfillment-execution:${{ env.SHORT_SHA }}
+      - name: Package and publish the Helm chart for this release
+        run: |
+          CHART_VERSION="${{ steps.version.outputs.version }}"
+          CHART_VERSION="${CHART_VERSION#v}"
+          mkdir -p /tmp/chart-out
+          helm package charts/fulfillment-execution \
+            --version "$CHART_VERSION" \
+            --app-version "$CHART_VERSION" \
+            -d /tmp/chart-out
+          echo "CHART_TGZ=/tmp/chart-out/fulfillment-execution-${CHART_VERSION}.tgz" >> "$GITHUB_ENV"
+          echo "$DOCKERHUB_TOKEN" | helm registry login registry-1.docker.io \
+            -u "$DOCKERHUB_USERNAME" --password-stdin
+          helm push "/tmp/chart-out/fulfillment-execution-${CHART_VERSION}.tgz" \
+            oci://registry-1.docker.io/claudioed
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Create and push the git tag
         run: |
           git config user.name "github-actions[bot]"
@@ -286,6 +303,10 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.version }}
           generate_release_notes: true
+          files: ${{ env.CHART_TGZ }}
           body: |
             Docker image: `claudioed/fulfillment-execution:${{ steps.version.outputs.version }}`
             (also tagged `latest` and `${{ env.SHORT_SHA }}`)
+
+            Helm chart: `oci://registry-1.docker.io/claudioed/fulfillment-execution:${{ steps.version.outputs.version }}`
+            (also attached below as a `.tgz`)
