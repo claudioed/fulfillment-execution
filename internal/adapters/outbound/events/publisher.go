@@ -27,9 +27,12 @@ func NewLogPublisher(logger *slog.Logger) *LogPublisher {
 	return &LogPublisher{logger: logger}
 }
 
-func (p *LogPublisher) Publish(_ context.Context, evts ...shared.DomainEvent) error {
+// Publish logs each event through the context-carrying slog API so that,
+// when the logger is trace-correlating, a published domain event can be tied
+// back to the request or consumed message that raised it.
+func (p *LogPublisher) Publish(ctx context.Context, evts ...shared.DomainEvent) error {
 	for _, e := range evts {
-		p.logger.Info("domain event published", "event_name", e.EventName(), "occurred_at", e.OccurredAt())
+		p.logger.InfoContext(ctx, "domain event published", "event_name", e.EventName(), "occurred_at", e.OccurredAt())
 	}
 	return nil
 }

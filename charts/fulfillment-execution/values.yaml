@@ -79,6 +79,19 @@ kafka:
   enabled: false
   brokers: "kafka:9092"
 
+# Deployment environment, exported as the deployment.environment.name
+# resource attribute on every span and metric.
+environment: "local"
+
+# OpenTelemetry. Traces and metrics are PUSHED over OTLP/gRPC to a Collector;
+# the service never exposes a Prometheus scrape endpoint of its own. An
+# unreachable endpoint is not fatal -- the exporters dial lazily, so the pod
+# still starts and serves, it just drops telemetry.
+otel:
+  enabled: true
+  endpoint: "otel-collector.observability.svc.cluster.local:4317"
+  serviceName: "fulfillment-execution"
+
 extraEnv: []
 
 livenessProbe:

@@ -43,6 +43,20 @@ type EventPublisher interface {
 	Publish(ctx context.Context, events ...shared.DomainEvent) error
 }
 
+// Metrics records the business events of the task lifecycle for the
+// observability pipeline. It is a port, not a direct OTel dependency, so the
+// application layer stays free of vendor telemetry types; the adapter behind
+// it turns each call into an OTel counter increment.
+//
+// Use cases treat a nil Metrics as "not instrumented" rather than an error:
+// telemetry must never change what a use case decides.
+type Metrics interface {
+	// TaskClaimed records that one task of taskType was leased to a station.
+	TaskClaimed(ctx context.Context, taskType task.Type)
+	// TaskCompleted records that one task of taskType was completed.
+	TaskCompleted(ctx context.Context, taskType task.Type)
+}
+
 // Clock supplies the current time, injected so use cases and lease logic are
 // deterministic under test.
 type Clock interface {

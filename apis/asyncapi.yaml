@@ -172,9 +172,27 @@ components:
         adapter, published on topic `warehouse.fulfillment.events` enriched
         with `work_unit_id` (the completed task's order reference) so Work
         Planning can call RecordCompletion(workUnitId).
+
+
+        Kafka message headers carry W3C trace context, so a consumer that
+        extracts them continues the publishing service's distributed trace
+        instead of starting a new one.
       contentType: application/cloudevents+json
       tags:
         - name: task
+      headers:
+        type: object
+        description: >
+          W3C Trace Context, injected as Kafka message headers by the
+          publisher's OpenTelemetry instrumentation.
+        properties:
+          traceparent:
+            type: string
+            description: W3C traceparent identifying the publishing span.
+            example: 00-8812c36621d214139a08949823716b93-14ddf02dbd8913ba-01
+          tracestate:
+            type: string
+            description: W3C tracestate, present only when a vendor added entries.
       payload:
         $ref: '#/components/schemas/TaskCompletedEvent'
       examples:

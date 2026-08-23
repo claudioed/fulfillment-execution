@@ -22,6 +22,8 @@ type ClaimNext struct {
 	Publisher     ports.EventPublisher
 	Clock         ports.Clock
 	LeaseDuration time.Duration
+	// Metrics is optional: nil means this use case runs uninstrumented.
+	Metrics ports.Metrics
 }
 
 // Execute finds the best-fit pending task for stationId and leases it.
@@ -55,6 +57,9 @@ func (uc *ClaimNext) Execute(ctx context.Context, stationId shared.StationId, ta
 			}
 			if err := uc.Publisher.Publish(ctx, shared.NewTaskClaimed(t.Id(), stationId, now)); err != nil {
 				return nil, err
+			}
+			if uc.Metrics != nil {
+				uc.Metrics.TaskClaimed(ctx, t.Type())
 			}
 			return t, nil
 		}

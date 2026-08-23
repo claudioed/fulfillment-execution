@@ -13,6 +13,8 @@ type CompleteTask struct {
 	Tasks     ports.TaskRepo
 	Publisher ports.EventPublisher
 	Clock     ports.Clock
+	// Metrics is optional: nil means this use case runs uninstrumented.
+	Metrics ports.Metrics
 }
 
 // Execute completes taskId on behalf of stationId.
@@ -32,5 +34,11 @@ func (uc *CompleteTask) Execute(ctx context.Context, taskId shared.TaskId, stati
 	if err := uc.Tasks.Save(ctx, t); err != nil {
 		return err
 	}
-	return uc.Publisher.Publish(ctx, shared.NewTaskCompleted(taskId, stationId, now))
+	if err := uc.Publisher.Publish(ctx, shared.NewTaskCompleted(taskId, stationId, now)); err != nil {
+		return err
+	}
+	if uc.Metrics != nil {
+		uc.Metrics.TaskCompleted(ctx, t.Type())
+	}
+	return nil
 }

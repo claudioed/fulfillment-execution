@@ -121,3 +121,19 @@ func (p *errPublisher) Publish(_ context.Context, _ ...shared.DomainEvent) error
 	}
 	return nil
 }
+
+// recordingMetrics is a ports.Metrics that just remembers what it was told,
+// so the use cases' business-metric instrumentation can be asserted without
+// an OTel pipeline.
+type recordingMetrics struct {
+	claimed   []task.Type
+	completed []task.Type
+}
+
+func (m *recordingMetrics) TaskClaimed(_ context.Context, taskType task.Type) {
+	m.claimed = append(m.claimed, taskType)
+}
+
+func (m *recordingMetrics) TaskCompleted(_ context.Context, taskType task.Type) {
+	m.completed = append(m.completed, taskType)
+}
