@@ -1,0 +1,1 @@
+{"parameters":[{"name":"id","in":"path","required":true,"description":"The task id, as returned by `POST /tasks` or a claim-next response.","schema":{"type":"string","example":"20260101T120000.000000000"}}]}

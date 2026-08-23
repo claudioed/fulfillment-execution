@@ -1,0 +1,71 @@
+---
+id: complete-task
+title: "Complete a task on behalf of the station that claimed it"
+description: "Finishes the task's lifecycle (Claimed -> Completed) and publishes `TaskCompleted`. Only the owning station's claim may complete it, and a completed task can never be completed again — this endpoint enforces the no-double-complete invariant, returning `409` on a repeat call rather than silently succeeding twice."
+sidebar_label: "Complete a task on behalf of the station that claimed it"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Complete a task on behalf of the station that claimed it"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/tasks/{id}/complete"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Finishes the task's lifecycle (Claimed -&gt; Completed) and publishes `TaskCompleted`. Only the owning station's claim may complete it, and a completed task can never be completed again — this endpoint enforces the no-double-complete invariant, returning `409` on a repeat call rather than silently succeeding twice.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./complete-task.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./complete-task.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./complete-task.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

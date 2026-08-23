@@ -1,0 +1,1 @@
+{"schema":{"type":"string","description":"The process path a task belongs to.","enum":["PICK","PACK","SLAM"],"example":"PICK","title":"TaskType"},"schemaType":"response"}

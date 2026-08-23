@@ -1,0 +1,1 @@
+{"schema":{"type":"string","description":"Lifecycle state of a Package.","enum":["OPEN","SEALED","LABELED","DIVERTED"],"example":"SEALED","title":"PackageStatus"},"schemaType":"response"}

@@ -1,0 +1,130 @@
+---
+id: process-paths
+title: Process paths — Pick, Pack, SLAM
+sidebar_label: Process paths
+sidebar_position: 2
+description: What Pick, Pack and SLAM actually are on a warehouse floor, and why they are modelled as named task types (queues) rather than as steps in a workflow.
+---
+
+# Process paths — Pick, Pack, SLAM
+
+A **process path** is one of Pick, Pack, or SLAM. In this model they are
+**named task types — that is, queues — not steps in a workflow**. That
+distinction is small to write down and large in consequence, so it is worth
+being precise about both what the paths physically are and why they are
+modelled this way.
+
+## What each path is, physically
+
+### Pick
+
+On order placement the system identifies the bin holding the item. Either a
+robot brings the storage pod to a pick station, or the picker walks to the
+bin. A shining light directs the associate to the exact slot; the item is
+checked for damage and placed into a tote that carries both a physical and a
+virtual map of its contents. When the tote is full — by weight or by
+dimension — it goes onto a conveyor toward packing.
+
+In this service: a `PICK` task, typically requiring the `pick` capability.
+The domain event `ItemPicked` exists in the catalogue for the retrieval fact
+itself.
+
+:::note Honest status
+`ItemPicked` is defined in `internal/domain/shared/events.go` and covered by
+the event tests, but no use case raises it today — the current Pick path is
+modelled at task granularity (claim → complete), not at item granularity. It
+is documented here and in the [event catalogue](../ddd/domain-events.md)
+because it is part of the intended model, not because it is currently emitted.
+:::
+
+### Pack
+
+The tote's barcode is scanned. As each item is scanned the system suggests a
+box or bag size from the product dimensions. The associate builds and tapes
+the carton and affixes a barcode carrying everything needed to generate a
+shipping label downstream.
+
+In this service: a `PACK` task, whose completion path produces a `Package`
+aggregate via `POST /tasks/{id}/seal-package`. The invariant that matters is
+that **a carton cannot be sealed without scanned contents** — sealing an
+unverified box is precisely how the wrong item ships.
+
+Note that **cartonization** (choosing the box size) is *not* implemented here.
+The platform's strategic guidance is to model cartonization as its own Generic
+Subdomain that both WMS and WES call into, rather than duplicating box-selection
+logic in two places.
+
+### SLAM — Scan, Label, Apply, Manifest
+
+Packages are scanned and weighed on a scale that detects expected-versus-actual
+weight discrepancies; a robotic arm prints and applies the shipping label with
+a blast of air.
+
+In this service: `POST /packages/{id}/slam`. The **weigh-check** is the
+invariant — if `|actual − expected|` exceeds tolerance the package is
+**diverted** rather than labelled, because a weight mismatch means the carton's
+contents do not match what the system believes is inside it. Shipping it would
+mean shipping the wrong thing, at the wrong postage, with a label that says
+otherwise. The tolerance is `pack.WeightTolerance = 0.05` in the same unit as
+the supplied weights.
+
+A diverted package raises **two** events, `WeightDiscrepancyDetected` and
+`PackageDiverted` — the measurement fact and the routing fact are separate
+concerns and downstream consumers care about different ones.
+
+## Why paths are queues, not steps
+
+The tempting model is a workflow: a unit of work flows Pick → Pack → SLAM, and
+each task "advances" to the next stage.
+
+This model rejects that, and models each path as **its own independent pool of
+tasks**. The reasons are concrete:
+
+**1. A station pulls from a queue; it does not wait for a workflow.**
+`claimNext` asks "what is the most urgent `PACK` work I am equipped to do?" A
+pack station is idle or it is not, and that has nothing to do with which
+particular pick finished last. Queues make the question answerable in one
+repository call ordered by CPT. A workflow model would make it a graph
+traversal.
+
+**2. The queue depth per path is the operationally interesting number.**
+`GET /queues/PACK/depth` answers "is packing starved or drowning?" — which is
+exactly the buffer telemetry `wes-work-planning` flow-balances on. A per-path
+queue depth *is* the read model; in a workflow model you would have to derive
+it by counting instances parked at a particular node.
+
+**3. The paths genuinely do not have a single fixed order at the unit level.**
+A multi-line order picked across three zones by three associates produces
+three independent pick confirmations at different times. Packing cannot start
+until all required lines have arrived. That fan-in — `OrderConvergence` in the
+reference model — is a *synchronisation* concern, and it belongs upstream,
+where there is visibility into partial completion across an order. Baking a
+linear Pick→Pack ordering into this service's task model would quietly assume
+a convergence guarantee this context does not have and cannot enforce.
+
+**4. Independence is what makes each path's dispatch policy separately
+tunable.** A change to how Pack tasks are prioritised should not require
+reasoning about Pick.
+
+## How a released work unit becomes a path
+
+The `WorkReleased` consumer derives the task type from
+`WorkReleased.data.path_id` using a **prefix convention**: `pick-*` → `PICK`,
+`pack-*` → `PACK`, `slam-*` → `SLAM`, defaulting to `PICK` when no prefix
+matches.
+
+:::caution Known simplification
+The prefix convention is a documented shortcut for this round of integration,
+not a durable contract. `path_id` does not in general carry the task type, and
+a real deployment would need either an explicit `task_type` field on
+`WorkReleased` or a lookup against the process-path registry. It is called out
+here, in the repo README, and in `INTEGRATION.md` so that nobody mistakes it
+for the intended long-term mapping. The `PICK` default in particular means a
+malformed `path_id` produces a Pick task rather than an error.
+:::
+
+Required capabilities are derived from the task type — a `PICK` task requires
+`pick` — using the same capability vocabulary `workforce-management` uses when
+it plans headcount per path. That shared vocabulary is the only thing the two
+contexts have in common, and it is deliberately a *published language*, not a
+shared type.

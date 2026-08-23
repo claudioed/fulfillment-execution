@@ -1,0 +1,33 @@
+---
+id: problem
+title: "Problem"
+description: "RFC 7807 (Problem Details for HTTP APIs) error response, used for every error this API returns. See https://www.rfc-editor.org/rfc/rfc7807."
+sidebar_label: "Problem"
+hide_title: true
+hide_table_of_contents: true
+schema: true
+sample: {"type":"https://errors.fulfillment-execution.warehouse-systems.dev/task-not-found","title":"Task not found","status":404,"detail":"usecases: task not found","instance":"/tasks/20260101T120000.000000000/renew-lease"}
+custom_edit_url: null
+---
+
+import Schema from "@theme/Schema";
+import Heading from "@theme/Heading";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Problem"}
+>
+</Heading>
+
+
+
+RFC 7807 (Problem Details for HTTP APIs) error response, used for every error this API returns. See https://www.rfc-editor.org/rfc/rfc7807.
+
+
+<Schema
+  {...require("./problem.Schema.json")}
+>
+  
+</Schema>
+            

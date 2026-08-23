@@ -1,0 +1,1 @@
+{"title":"Body","body":{"required":true,"content":{"application/json":{"schema":{"type":"object","required":["taskType"],"properties":{"taskType":{"type":"string","description":"The process path a task belongs to.","enum":["PICK","PACK","SLAM"],"example":"PICK","title":"TaskType"}},"example":{"taskType":"PICK"},"title":"ClaimNextRequest"},"example":{"taskType":"PICK"}}}}}

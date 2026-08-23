@@ -1,0 +1,43 @@
+/**
+ * Fulfillment Execution documentation theme.
+ * Infima CSS variables — see https://docusaurus.io/docs/styling-layout
+ */
+
+:root {
+  --ifm-color-primary: #1f5f8b;
+  --ifm-color-primary-dark: #1c567d;
+  --ifm-color-primary-darker: #1a5071;
+  --ifm-color-primary-darkest: #15425d;
+  --ifm-color-primary-light: #22699e;
+  --ifm-color-primary-lighter: #246ea5;
+  --ifm-color-primary-lightest: #2a7cb9;
+  --ifm-code-font-size: 93%;
+  --docusaurus-highlighted-code-line-bg: rgb(0 0 0 / 10%);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #7cc4f0;
+  --ifm-color-primary-dark: #5cb5ec;
+  --ifm-color-primary-darker: #4cadea;
+  --ifm-color-primary-darkest: #1c95e2;
+  --ifm-color-primary-light: #9cd3f4;
+  --ifm-color-primary-lighter: #acdbf6;
+  --ifm-color-primary-lightest: #dcf0fb;
+  --docusaurus-highlighted-code-line-bg: rgb(0 0 0 / 30%);
+}
+
+/* Tables carry a lot of this site's content — give them room to breathe. */
+.markdown table {
+  display: table;
+  width: 100%;
+}
+
+.markdown table th {
+  text-align: left;
+}
+
+/* Mermaid diagrams are wide; centre them and stop them overflowing. */
+.docusaurus-mermaid-container {
+  overflow-x: auto;
+  text-align: center;
+}

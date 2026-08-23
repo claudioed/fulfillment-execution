@@ -1,0 +1,49 @@
+.features {
+  display: flex;
+  align-items: center;
+  padding: 3rem 0;
+  width: 100%;
+}
+
+.featureCol {
+  margin-bottom: 1.5rem;
+}
+
+.featureCard {
+  display: block;
+  height: 100%;
+  padding: 1.75rem;
+  border: 1px solid var(--ifm-color-emphasis-300);
+  border-radius: 12px;
+  background: var(--ifm-background-surface-color);
+  transition:
+    border-color 200ms ease,
+    transform 200ms ease,
+    box-shadow 200ms ease;
+}
+
+.featureCard:hover {
+  text-decoration: none;
+  border-color: var(--ifm-color-primary);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 8%);
+}
+
+.featureKicker {
+  display: block;
+  font-family: var(--ifm-font-family-monospace);
+  font-size: 0.8rem;
+  letter-spacing: 0.02em;
+  color: var(--ifm-color-primary);
+  margin-bottom: 0.4rem;
+}
+
+.featureTitle {
+  margin-bottom: 0.6rem;
+  color: var(--ifm-heading-color);
+}
+
+.featureBody {
+  margin-bottom: 0;
+  color: var(--ifm-font-color-base);
+}

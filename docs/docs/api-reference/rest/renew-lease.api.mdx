@@ -1,0 +1,71 @@
+---
+id: renew-lease
+title: "Extend the active lease held by the claiming station"
+description: "Pushes out a task's lease expiry so a station still actively working it doesn't lose the claim to the automatic expiry sweep (`POST /tasks/expire-leases`). Only the station that currently owns the claim may renew it. Idempotent in effect: repeated calls simply keep extending the same lease."
+sidebar_label: "Extend the active lease held by the claiming station"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Extend the active lease held by the claiming station"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/tasks/{id}/renew-lease"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Pushes out a task's lease expiry so a station still actively working it doesn't lose the claim to the automatic expiry sweep (`POST /tasks/expire-leases`). Only the station that currently owns the claim may renew it. Idempotent in effect: repeated calls simply keep extending the same lease.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./renew-lease.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./renew-lease.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./renew-lease.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

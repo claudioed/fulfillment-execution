@@ -1,0 +1,1 @@
+{"schema":{"type":"string","description":"Lifecycle state of a Task.","enum":["PENDING","CLAIMED","COMPLETED"],"example":"PENDING","title":"TaskStatus"},"schemaType":"response"}

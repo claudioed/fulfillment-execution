@@ -1,0 +1,1 @@
+{"parameters":[{"name":"stationId","in":"path","required":true,"description":"The station pulling work, e.g. as registered via `POST /stations`.","schema":{"type":"string","example":"station-1"}}]}

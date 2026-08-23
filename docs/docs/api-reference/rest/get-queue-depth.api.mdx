@@ -1,0 +1,71 @@
+---
+id: get-queue-depth
+title: "Read the pending-task count for a process path (read model)"
+description: "A projection, not a live domain query: returns how many tasks of `taskType` currently sit Pending (not yet claimed) in the pool. Read-only — this endpoint never mutates state. An unrecognized `taskType` is not an error; it simply has a depth of `0`, since this is a count over existing tasks rather than a lookup against a fixed enum the server enforces."
+sidebar_label: "Read the pending-task count for a process path (read model)"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Read the pending-task count for a process path (read model)"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/queues/{taskType}/depth"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+A projection, not a live domain query: returns how many tasks of `taskType` currently sit Pending (not yet claimed) in the pool. Read-only — this endpoint never mutates state. An unrecognized `taskType` is not an error; it simply has a depth of `0`, since this is a count over existing tasks rather than a lookup against a fixed enum the server enforces.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-queue-depth.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-queue-depth.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-queue-depth.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

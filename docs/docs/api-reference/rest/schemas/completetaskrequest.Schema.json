@@ -1,0 +1,1 @@
+{"schema":{"type":"object","required":["stationId"],"properties":{"stationId":{"type":"string","description":"Must match the station that currently owns the active claim.","example":"station-1"}},"example":{"stationId":"station-1"},"title":"CompleteTaskRequest"},"schemaType":"response"}

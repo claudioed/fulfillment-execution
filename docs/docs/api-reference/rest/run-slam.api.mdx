@@ -1,0 +1,71 @@
+---
+id: run-slam
+title: "Run the SLAM weigh-check on a sealed package"
+description: "SLAM = Scan, Label, Apply, Manifest. Weighs a sealed package: if `|actualWeight - expectedWeight|` is within tolerance (0.05, same unit as the two weights — e.g. kilograms), a shipping label is applied (`LabelApplied`); otherwise the package is diverted (`WeightDiscrepancyDetected` + `PackageDiverted`) rather than shipped with a wrong manifest. Idempotent in effect once processed: a repeat call on an already-labeled-or-diverted package returns `409` rather than re-processing it."
+sidebar_label: "Run the SLAM weigh-check on a sealed package"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Run the SLAM weigh-check on a sealed package"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/packages/{id}/slam"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+SLAM = Scan, Label, Apply, Manifest. Weighs a sealed package: if `|actualWeight - expectedWeight|` is within tolerance (0.05, same unit as the two weights — e.g. kilograms), a shipping label is applied (`LabelApplied`); otherwise the package is diverted (`WeightDiscrepancyDetected` + `PackageDiverted`) rather than shipped with a wrong manifest. Idempotent in effect once processed: a repeat call on an already-labeled-or-diverted package returns `409` rather than re-processing it.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./run-slam.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./run-slam.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./run-slam.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

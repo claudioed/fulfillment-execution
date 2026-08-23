@@ -1,0 +1,1 @@
+{"schema":{"type":"object","properties":{"id":{"type":"string","example":"station-1"},"capabilities":{"type":"array","items":{"type":"string"},"example":["pick"]},"occupied":{"type":"boolean","description":"Whether the station currently has an occupant checked in.","example":false}},"title":"StationResponse"},"schemaType":"response"}

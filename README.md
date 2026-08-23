@@ -11,6 +11,17 @@ vanishing.
 See `CLAUDE.md` for the full architecture and ubiquitous language, and
 `/Users/claudioed/docs/amazon-fulfillment-ddd.md` for the source domain model.
 
+## Documentation
+
+Full documentation site: **<https://claudioed.github.io/fulfillment-execution/>**
+
+It covers the business context and ubiquitous language, the DDD model
+(subdomain classification, aggregates and invariants, domain events), an API
+reference generated from `apis/openapi.yaml` plus a hand-written Events page
+from `apis/asyncapi.yaml`, the ecosystem context map, and the Architecture
+Decision Records. Source lives in `docs/` and deploys via
+`.github/workflows/docs.yml`.
+
 ## Architecture
 
 Hexagonal / Ports & Adapters, with a strict dependency rule: **domain depends

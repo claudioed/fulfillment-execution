@@ -1,0 +1,61 @@
+---
+id: get-healthz
+title: "Liveness check"
+description: "Returns `200` if the HTTP server process is up and serving. This is a liveness probe, not a readiness probe — it does not check connectivity to Postgres or Kafka, and always returns `200` with no body as long as the process can handle the request at all."
+sidebar_label: "Liveness check"
+hide_title: true
+hide_table_of_contents: true
+api: eJztVlFuI7kRvUqBPyMJLcmZ/Cy0QABl1skY8WQFW4v9mDHiEllSM2aTHFa1bK3XQA6RE+YkQbElebxJbpAfCybZ5KtXr17Vs0mZCopP8cqZhdmRfCQM0v5iGiO4Y7P4bG4PLNSZu8Y4Ylt81uNmYW5I+hIZ7t9fXNyD34K0BB/X6xUwlT0VyCVZYgbP0GfA6OqGj7sZrFtf1xGC31PUU7mkDTUQkwBCIXT+dRn+9Y9/ghdwibiesC3ZB7ApRrLi914OIAlWiWVXiCEV+AtuH7Cpr2J4xANDeYP30UsLMcEmuQMgQ0hxp78axAm4xQgtRheoLhf62hMLoACGMPsSTWMKcU6Ric3i2by/uNCftzStWxritvSWkZl5eWlMR9KmI/emMRmlNQszb89pGMjUTDybvgSzMK1IXsznIVkMbWJZfHfx3YX5bXqudRsc7Smk3FEUGPk47ahL5QDoMAsVhj4GBfTDcr384/L28m8/3VwrOiYZm5c7fd32xcvBLD7fNcbHbdIIxUsgszB/6sPWh1Bvv3wi2+vbsFxdmcYo6AHJ72YXs//E99+/9UMGBPlhGvyW7MEGApsKwSb10ZHTrAs9CWxTgZW3Dw2sUP9qqm+vl59gdGsxNnCNGwoNLHMOhwY+YfRbYhnP4Er0GZceI0sh7CBt4edUHmAVMEYfdw08tt62UCgQMjE86q6PkkDays6QzlFSmR+VprKs6letMp0kkxPcXC5/+HT5juEqCu2GcgNW4aY4HnC/udZHUKWCZ+6Jwaauw+hYFf7zh9s5fe39kFBkyO2BvSZ6gMhAlUpysy/xS1TtOdp6DQocsd9FKH0gPTiZ5D6EAXfuuZ1MFoDAMsCzGALDvQ3ou7/Sk4yOG1euAYsZNz548cTj+yN+Aq4+AUyBrAxpbP2uJZZpLj6pimBEWILXIvqwWlemPqSu8yLkYDUUh0Jd+47GkCk6/U/FMLxwBOcZLBXxW09uoCOTUz2osZyBRNLsROyIvwnMR0C3x2hpBktWRiqVlRCUaZdYpilamkwaoLhNxZKDzQEQxHc03aQncjCZVGEoZX4LCJUmvaN6U4pbXzpyMCoU6ZHcWA3Jpi4H0kA3tFU9a0T1GqCn7Atxc5Y+YC+pQ9HMhsPZuar+CHJKAQpKSwWkxQh7jJ5bNdYh6Z61Bt8x4G5XaIdCvIDJZI38MJnASIsGfq1VA7/WkvkeVkeup3+ADxoMuVHF5sZ16YR93MBkcjtQqVfhoLuc2Fd2q6viq0IO6iQNpEiQrO0zxsE+K5lH7U8migR3VLEpKDVBSL3kXqpGMEIqjgpsyKZjOgmDegEWSfH7Skut/Ufyu3Y6tAfMWbWmp1ufs4YX1BM0G87vqRxVmofnIUXA4QIB59kWyhjtATZ0SKrxFKiocMaV5snkx17UOtimTDAf/AnLQVXxpp7PXSuHGsnJVwbuRtKivOO3DvSO4e9pc2p7ud8Ezy0x3Oupm+Fzd9+o1rhXqbVUCF7taNy8vtph1Oh83FMUNf9CiqzmkM/PX523byUV3J2yc77GFb+nV79560TOF7ISDgMEOSrwfLnmK2NBoZObgW0xRgrj4yygpz3Dx+X68sfl7XRbiLTqjp41uvG2xeI4RfiEUjsSXGtrg/evLaPsVGuKddj6/bgSaIOnKAxYaqWR1RqUBA8xPdYvteexlN5KX44TiKa/huIF9l7nkaHNQ/DxgYfWr30IrWg/VJP5Xy3NNN+0bV7M5zsvbb+Z2dTNbcDe+URuvn39dErnT3VAyImlw/jNM9enkanK/LeN9bkCoyj/H9GGPMkhK2s6M8xzQB/NyzElz8dx67M5jVt3jdGJSpeenzfI9FMJLy+6/LWncpyC9lg8bnQA+nz37QT358u1eXn5N/vz/uc=
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Liveness check"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/healthz"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Returns `200` if the HTTP server process is up and serving. This is a liveness probe, not a readiness probe — it does not check connectivity to Postgres or Kafka, and always returns `200` with no body as long as the process can handle the request at all.
+
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-healthz.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-healthz.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

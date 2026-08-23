@@ -1,0 +1,1 @@
+{"parameters":[{"name":"id","in":"path","required":true,"description":"The Pack task id whose active claim authorizes this seal.","schema":{"type":"string","example":"20260101T120100.000000000"}}]}

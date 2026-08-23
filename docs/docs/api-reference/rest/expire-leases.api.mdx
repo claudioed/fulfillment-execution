@@ -1,0 +1,61 @@
+---
+id: expire-leases
+title: "Sweep every Claimed task whose lease has expired back to Pending"
+description: "The Clock-driven side of the at-most-once lease design: scans every Claimed task and, for each whose lease expiry has passed without a renewal or completion, frees it back to Pending (publishing `LeaseExpired`) so the work is never silently lost. A collection- level action on the `tasks` resource — not scoped to a single task id — analogous to how `/tasks/{id}/complete` is a single-resource action; deliberately not placed under an unscoped `/admin` path. Idempotent: a second call simply frees nothing new if nothing else has expired since the last sweep. Takes no request body."
+sidebar_label: "Sweep every Claimed task whose lease has expired back to Pending"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Sweep every Claimed task whose lease has expired back to Pending"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/tasks/expire-leases"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The Clock-driven side of the at-most-once lease design: scans every Claimed task and, for each whose lease expiry has passed without a renewal or completion, frees it back to Pending (publishing `LeaseExpired`) so the work is never silently lost. A collection- level action on the `tasks` resource — not scoped to a single task id — analogous to how `/tasks/{id}/complete` is a single-resource action; deliberately not placed under an unscoped `/admin` path. Idempotent: a second call simply frees nothing new if nothing else has expired since the last sweep. Takes no request body.
+
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./expire-leases.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./expire-leases.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

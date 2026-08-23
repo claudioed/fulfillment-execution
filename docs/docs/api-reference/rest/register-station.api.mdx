@@ -1,0 +1,69 @@
+---
+id: register-station
+title: "Register or re-register a station"
+description: "Creates a station with the given capability set, or — if `stationId` already exists — replaces its capability set (e.g. recertifying a station for a new capability). This is deliberately idempotent by client-supplied id: re-registering the same `stationId` upserts rather than erroring or duplicating, which is what closes the pull-dispatch gap for HTTP-only smoke testing (without this endpoint there is no way to create a station over HTTP, so `claim-next` against a freshly started server always 404s)."
+sidebar_label: "Register or re-register a station"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Register or re-register a station"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/stations"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Creates a station with the given capability set, or — if `stationId` already exists — replaces its capability set (e.g. recertifying a station for a new capability). This is deliberately idempotent by client-supplied id: re-registering the same `stationId` upserts rather than erroring or duplicating, which is what closes the pull-dispatch gap for HTTP-only smoke testing (without this endpoint there is no way to create a station over HTTP, so `claim-next` against a freshly started server always 404s).
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./register-station.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./register-station.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

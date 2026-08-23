@@ -1,0 +1,101 @@
+---
+id: index
+title: Architecture Decision Records
+sidebar_label: About ADRs
+sidebar_position: 0
+slug: /adr/
+description: Why this service keeps ADRs, the template it uses, and how to propose a new one.
+---
+
+# Architecture Decision Records
+
+An **Architecture Decision Record (ADR)** captures a single architecturally
+significant decision: the forces at play, the choice made, and what that
+choice commits the team to. One decision, one file, numbered in the order they
+were taken.
+
+## Why these exist
+
+Code shows *what* was built. Tests show that it works. Neither shows **why**
+the obvious alternative was rejected — and that is the expensive knowledge to
+lose.
+
+Concretely, in this repository: nothing in `internal/domain/task/task.go`
+explains why there is a lease rather than a database row lock, or why
+`ExpireLeaseIfDue` is called before the already-claimed check inside `Claim`.
+Both are load-bearing decisions with real alternatives, and both look like
+arbitrary style choices to anyone reading the code cold. An ADR is the
+cheapest possible place to put that reasoning: next to the code, in version
+control, dated, and immutable once accepted.
+
+The ADRs here are **reconstructed from decisions actually made in this
+repository** — visible in `CLAUDE.md`, `TASKS.md`, `INTEGRATION.md`, the CI
+workflow and the git history. They are not generic best-practice essays.
+
+## The template
+
+These records use [Michael Nygard's
+template](https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions),
+the de facto standard, with five sections:
+
+```markdown
+# NNNN. Title in the imperative
+
+## Status
+Proposed | Accepted | Deprecated | Superseded by ADR-NNNN
+
+## Context
+The forces at play: technical, business, operational. Written in
+value-neutral language — what is true, not what we want to do about it.
+
+## Decision
+The response to those forces, stated in the active voice:
+"We will …"
+
+## Consequences
+What becomes easier and what becomes harder as a result. Both.
+An ADR with only positive consequences is not describing a real decision.
+```
+
+Two properties make the format work, and are worth preserving:
+
+- **The Context section is neutral.** If it argues for the decision, it has
+  stopped describing the problem and started selling the solution — and a
+  future reader can no longer tell whether the reasoning still holds.
+- **The Consequences section is honest about costs.** Every decision here has
+  a "what becomes harder" paragraph. Pull dispatch gave up global
+  optimisation; leases gave up immediate detection of an abandoned claim.
+  Recording that is the point.
+
+## Lifecycle
+
+ADRs are **immutable once accepted**. A decision that changes is not edited —
+a new ADR supersedes it, and the old one's status becomes
+`Superseded by ADR-NNNN`. The record of what was believed, and when, is as
+valuable as the current answer.
+
+## Proposing a new one
+
+1. Copy the template above into `docs/docs/adr/NNNN-short-kebab-title.md`,
+   taking the next free number.
+2. Set the status to `Proposed` and open a PR.
+3. Discuss in review. If the decision changes shape, edit the PR — the
+   immutability rule starts at acceptance, not at drafting.
+4. On merge, set the status to `Accepted`.
+5. Add the file to the ADR list in `docs/sidebars.ts`.
+
+If a decision supersedes an existing one, say so in both files: the new one
+gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
+`Superseded by ADR-NNNN` in its Status.
+
+## The records
+
+| # | Title | Status |
+| --- | --- | --- |
+| [0001](./0001-hexagonal-ports-and-adapters.md) | Hexagonal (ports and adapters) architecture | Accepted |
+| [0002](./0002-pull-based-claimnext-dispatch.md) | Pull-based `claimNext` dispatch over push assignment | Accepted |
+| [0003](./0003-lease-based-at-most-once-claiming.md) | Lease-based at-most-once claiming over a hard lock | Accepted |
+| [0004](./0004-kafka-integration-events-and-envelope.md) | Kafka for integration events, with a CloudEvents-typed catalogue | Accepted |
+| [0005](./0005-rfc-7807-problem-details.md) | RFC 7807 `application/problem+json` for every error response | Accepted |
+| [0006](./0006-arch-go-architecture-fitness-tests.md) | arch-go fitness tests to enforce the dependency rule | Accepted |
+| [0007](./0007-godog-bdd-acceptance-tests.md) | godog (Gherkin) acceptance tests for the invariants | Accepted |
