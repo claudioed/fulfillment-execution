@@ -14,9 +14,14 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
 // Topic is the topic fulfillment-execution publishes its outbound
@@ -104,9 +109,36 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 		if err != nil {
 			return fmt.Errorf("kafka: marshal envelope: %w", err)
 		}
-		if err := p.Writer.WriteMessages(ctx, kafkago.Message{Key: []byte(tc.TaskId), Value: payload}); err != nil {
-			return fmt.Errorf("kafka: publish TaskCompleted: %w", err)
+		if err := p.write(ctx, tc, payload); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// write publishes one already-marshalled envelope inside a
+// "kafka.publish <topic>" producer span, injecting that span's context into
+// the message headers so the consuming service's span becomes a child of
+// this one.
+func (p *Publisher) write(ctx context.Context, tc shared.TaskCompleted, payload []byte) error {
+	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
+		"kafka.publish "+Topic,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKafka,
+			semconv.MessagingDestinationName(Topic),
+			semconv.MessagingOperationName("publish"),
+		),
+	)
+	defer span.End()
+
+	msg := kafkago.Message{Key: []byte(tc.TaskId), Value: payload}
+	observability.InjectKafkaTrace(ctx, &msg.Headers)
+
+	if err := p.Writer.WriteMessages(ctx, msg); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return fmt.Errorf("kafka: publish TaskCompleted: %w", err)
 	}
 	return nil
 }

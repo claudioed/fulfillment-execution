@@ -782,3 +782,65 @@ func TestRegisterStation_ThenClaimNextSucceeds(t *testing.T) {
 		t.Fatalf("expected Claimed, got %s", got.Status())
 	}
 }
+
+// TestClaimNext_CountsTheClaimedTaskByType and its CompleteTask counterpart
+// pin the business metric to the real domain event -- the moment the task is
+// actually leased/completed -- rather than to an HTTP request that may not
+// have led to either.
+func TestClaimNext_CountsTheClaimedTaskByType(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+
+	metrics := &recordingMetrics{}
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, Metrics: metrics}
+
+	if _, err := claim.Execute(ctx, "s1", task.Pack); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(metrics.claimed) != 1 || metrics.claimed[0] != task.Pack {
+		t.Fatalf("claimed counter recorded %v, want one Pack", metrics.claimed)
+	}
+
+	// A claim that finds nothing must not count.
+	if _, err := claim.Execute(ctx, "s1", task.Pack); err == nil {
+		t.Fatal("expected ErrNoClaimableTask on an empty pool")
+	}
+	if len(metrics.claimed) != 1 {
+		t.Errorf("a failed claim was counted: %v", metrics.claimed)
+	}
+}
+
+func TestCompleteTask_CountsTheCompletedTaskByType(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Slam, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("slam"))
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("slam")))
+
+	metrics := &recordingMetrics{}
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, Metrics: metrics}
+	claimed, err := claim.Execute(ctx, "s1", task.Slam)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	complete := &usecases.CompleteTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, Metrics: metrics}
+
+	// A rejected completion must not count.
+	if err := complete.Execute(ctx, claimed.Id(), "wrong-station"); err == nil {
+		t.Fatal("expected ownership validation to reject a non-owning station")
+	}
+	if len(metrics.completed) != 0 {
+		t.Fatalf("a rejected completion was counted: %v", metrics.completed)
+	}
+
+	if err := complete.Execute(ctx, claimed.Id(), "s1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(metrics.completed) != 1 || metrics.completed[0] != task.Slam {
+		t.Fatalf("completed counter recorded %v, want one Slam", metrics.completed)
+	}
+}

@@ -92,6 +92,58 @@ migrate -path migrations -database "$DATABASE_URL" up
 | `DATABASE_URL` | (unset) | Postgres DSN; unset selects memory adapters |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list, used by both the `WorkReleased` consumer and the `TaskCompleted` publisher |
 | `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` |
+| `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTel Collector's OTLP/gRPC address (see [Observability](#observability)) |
+| `OTEL_SERVICE_NAME` | `fulfillment-execution` | `service.name` resource attribute |
+| `SERVICE_VERSION` | `dev` | `service.version` resource attribute |
+| `ENVIRONMENT`  | `local` | `deployment.environment.name` resource attribute |
+
+## Observability
+
+Traces and metrics are exported over **OTLP/gRPC** to an OpenTelemetry
+Collector; the service does not expose a Prometheus scrape endpoint of its
+own — the Collector handles Prometheus exposition for the whole fleet. A
+Collector is expected at `OTEL_EXPORTER_OTLP_ENDPOINT` (default
+`localhost:4317`); in the `warehouse-infra` kind cluster the Helm chart
+points that at the in-cluster Collector Service
+(`otel-collector.observability.svc.cluster.local:4317`).
+
+**An unreachable Collector is never fatal.** The OTLP exporters dial lazily
+and no blocking dial option is set, so with nothing listening the service
+still starts and serves at full speed — telemetry is simply dropped.
+
+### What gets exported
+
+| Signal | What |
+|--------|------|
+| Traces | One server span per HTTP request (via `otelchi`), named after the **route pattern** (`POST /tasks/{id}/complete`) rather than the raw path; a child span per Postgres query/batch/copy/acquire (via `otelpgx`), carrying the parameterised SQL — query values are never recorded; `kafka.publish <topic>` / `kafka.consume <topic>` spans around the Kafka boundary |
+| Metrics | `http.server.request.duration` (histogram, seconds, by route + method + status); `fulfillment.tasks.claimed` and `fulfillment.tasks.completed` counters attributed by `task.type` (Pick \| Pack \| SLAM); pgxpool connection gauges; Go runtime metrics (goroutines, GC, memory) |
+| Logs | Structured JSON on stdout. Any log emitted while a span is active also carries `trace_id` and `span_id`, so a log line links straight to its trace |
+
+The two task counters are incremented inside the `ClaimNext` and
+`CompleteTask` **use cases**, not in the HTTP handler, so they count the real
+domain events — a rejected claim or a rejected completion does not count.
+
+### Distributed tracing across services
+
+Trace context crosses the Kafka boundary in the message headers (W3C
+`traceparent`), injected on publish and extracted on consume. A `WorkReleased`
+published by `wes-work-planning` and the `Task` created from it here are
+therefore parts of a **single trace**, as is the `TaskCompleted` this service
+publishes back onto `warehouse.fulfillment.events`.
+
+### Seeing it locally
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 LOG_LEVEL=info go run ./cmd/execution
+```
+
+Every request line then looks like:
+
+```json
+{"time":"...","level":"INFO","msg":"http request","method":"POST","path":"/tasks",
+ "status":201,"trace_id":"8812c36621d214139a08949823716b93","span_id":"14ddf02dbd8913ba"}
+```
 
 ## Local development / quality gate
 

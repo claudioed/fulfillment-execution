@@ -14,11 +14,16 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
+	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
 // Envelope is the CloudEvents-like wrapper shared across all four
@@ -75,8 +80,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 			}
 			return err
 		}
-		if err := c.HandleMessage(ctx, msg.Value); err != nil {
-			c.Logger.Error("kafka message handling failed", "error", err)
+		if err := c.Handle(ctx, msg); err != nil {
+			c.Logger.ErrorContext(ctx, "kafka message handling failed", "error", err)
 		}
 	}
 }
@@ -84,6 +89,36 @@ func (c *Consumer) Run(ctx context.Context) error {
 // Close releases the underlying Kafka reader.
 func (c *Consumer) Close() error {
 	return c.Reader.Close()
+}
+
+// Handle processes one consumed message inside a
+// "kafka.consume <topic>" span whose parent is the producer's span, read
+// from the message headers. That link is what makes a WorkReleased published
+// by wes-work-planning and the Task created here parts of a single
+// distributed trace.
+//
+// It is exported separately from Run so the propagation can be tested
+// without a live broker.
+func (c *Consumer) Handle(ctx context.Context, msg kafkago.Message) error {
+	ctx = observability.ExtractKafkaTrace(ctx, msg.Headers)
+
+	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
+		"kafka.consume "+msg.Topic,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKafka,
+			semconv.MessagingDestinationName(msg.Topic),
+			semconv.MessagingOperationName("process"),
+		),
+	)
+	defer span.End()
+
+	if err := c.HandleMessage(ctx, msg.Value); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	return nil
 }
 
 // HandleMessage decodes raw as an Envelope and, if it is a not-yet-processed

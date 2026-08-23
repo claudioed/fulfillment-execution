@@ -13,8 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
@@ -24,6 +22,7 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
 // workReleasedTopic is the topic wes-work-planning publishes WorkReleased
@@ -40,6 +39,40 @@ func main() {
 func run() error {
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
+
+	// Telemetry comes up right after the logger and before any adapter, so
+	// everything built below is instrumented. An unreachable Collector is
+	// not fatal: the OTLP exporters dial lazily, so the service starts and
+	// serves normally with telemetry dropped on the floor.
+	rootCtx := context.Background()
+	serviceName := observability.ServiceName()
+	otelShutdown, err := observability.Setup(rootCtx, serviceName, observability.ServiceVersion(), observability.Endpoint())
+	if err != nil {
+		logger.Error("opentelemetry setup degraded", "error", err)
+	}
+	if otelShutdown != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := otelShutdown(ctx); err != nil {
+				logger.Error("opentelemetry shutdown failed", "error", err)
+			}
+		}()
+	} else {
+		logger.Warn("opentelemetry disabled; traces and metrics will not be exported")
+	}
+	logger.Info("telemetry configured",
+		"service_name", serviceName,
+		"service_version", observability.ServiceVersion(),
+		"otlp_endpoint", observability.Endpoint(),
+	)
+
+	metrics, err := observability.NewMetrics()
+	if err != nil {
+		// A missing counter must not stop the service from doing work.
+		logger.Error("task metrics unavailable", "error", err)
+		metrics = nil
+	}
 
 	httpAddr := getenv("HTTP_ADDR", ":8080")
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -62,11 +95,14 @@ func run() error {
 		if err := postgres.Migrate(databaseURL, "migrations"); err != nil {
 			return err
 		}
-		pool, err := pgxpool.New(context.Background(), databaseURL)
+		pool, err := postgres.NewPool(rootCtx, databaseURL)
 		if err != nil {
 			return err
 		}
 		defer pool.Close()
+		if err := postgres.RecordPoolStats(pool); err != nil {
+			logger.Error("pgxpool metrics unavailable", "error", err)
+		}
 		taskRepo = postgres.NewTaskRepo(pool)
 		stationRepo = postgres.NewStationRepo(pool)
 		packageRepo = postgres.NewPackageRepo(pool)
@@ -90,9 +126,9 @@ func run() error {
 
 	handlers := &inboundhttp.Handlers{
 		CreateTask:      createTask,
-		ClaimNext:       &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock},
+		ClaimNext:       &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
 		RenewLease:      &usecases.RenewLease{Tasks: taskRepo, Clock: clock},
-		CompleteTask:    &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock},
+		CompleteTask:    &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
 		SealPackage:     &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId},
 		RunSlam:         &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock},
 		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: taskRepo},
@@ -135,9 +171,22 @@ func run() error {
 	return srv.Shutdown(ctx)
 }
 
+// metricsPort converts a possibly-nil *observability.Metrics into a
+// ports.Metrics, avoiding the typed-nil trap: assigning a nil *Metrics
+// straight into the interface field would produce a non-nil interface whose
+// method calls panic, defeating the use cases' nil check.
+func metricsPort(m *observability.Metrics) ports.Metrics {
+	if m == nil {
+		return nil
+	}
+	return m
+}
+
 // newLogger builds a JSON slog.Logger writing to stdout, with its minimum
 // level set from a LOG_LEVEL value (debug|info|warn|warning|error,
-// case-insensitive, defaulting to info for anything else).
+// case-insensitive, defaulting to info for anything else). The JSON handler
+// is wrapped so records logged with a context carrying an active span also
+// carry that span's trace_id and span_id.
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
@@ -150,7 +199,9 @@ func newLogger(level string) *slog.Logger {
 	default:
 		lvl = slog.LevelInfo
 	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+	return slog.New(observability.NewSlogHandler(
+		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}),
+	))
 }
 
 func getenv(key, fallback string) string {
