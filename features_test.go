@@ -85,7 +85,7 @@ func (w *world) reset() {
 		RegisterStation: &usecases.RegisterStation{Stations: stations, Publisher: publisher},
 	}
 
-	w.server = httptest.NewServer(execmhttp.NewRouter(h))
+	w.server = httptest.NewServer(execmhttp.NewRouter(h, nil))
 	w.client = w.server.Client()
 	w.clock = clock
 	w.publisher = publisher

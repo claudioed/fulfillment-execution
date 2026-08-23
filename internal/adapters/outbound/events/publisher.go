@@ -5,7 +5,7 @@ package events
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
@@ -15,21 +15,21 @@ import (
 // ports.EventPublisher and is a placeholder for a Kafka producer: swap it
 // for an adapter that serializes DomainEvent onto a topic per EventName().
 type LogPublisher struct {
-	logger *log.Logger
+	logger *slog.Logger
 }
 
 // NewLogPublisher constructs a LogPublisher writing through logger. A nil
-// logger uses the standard library's default logger.
-func NewLogPublisher(logger *log.Logger) *LogPublisher {
+// logger uses slog.Default().
+func NewLogPublisher(logger *slog.Logger) *LogPublisher {
 	if logger == nil {
-		logger = log.Default()
+		logger = slog.Default()
 	}
 	return &LogPublisher{logger: logger}
 }
 
 func (p *LogPublisher) Publish(_ context.Context, evts ...shared.DomainEvent) error {
 	for _, e := range evts {
-		p.logger.Printf("event=%s occurred_at=%s", e.EventName(), e.OccurredAt().Format("2006-01-02T15:04:05Z07:00"))
+		p.logger.Info("domain event published", "event_name", e.EventName(), "occurred_at", e.OccurredAt())
 	}
 	return nil
 }

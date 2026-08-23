@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -46,14 +46,14 @@ type Consumer struct {
 	Reader     *kafkago.Reader
 	CreateTask *usecases.CreateTask
 	Processed  ports.ProcessedEvents
-	Logger     *log.Logger
+	Logger     *slog.Logger
 }
 
 // NewConsumer constructs a Consumer reading topic from brokers as part of
 // consumer group "fulfillment-execution".
-func NewConsumer(brokers []string, topic string, createTask *usecases.CreateTask, processed ports.ProcessedEvents, logger *log.Logger) *Consumer {
+func NewConsumer(brokers []string, topic string, createTask *usecases.CreateTask, processed ports.ProcessedEvents, logger *slog.Logger) *Consumer {
 	if logger == nil {
-		logger = log.Default()
+		logger = slog.Default()
 	}
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers: brokers,
@@ -76,7 +76,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 			return err
 		}
 		if err := c.HandleMessage(ctx, msg.Value); err != nil {
-			c.Logger.Printf("kafka: failed to handle message: %v", err)
+			c.Logger.Error("kafka message handling failed", "error", err)
 		}
 	}
 }

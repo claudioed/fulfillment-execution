@@ -42,7 +42,7 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 		ExpireLeases:    &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
 		RegisterStation: &usecases.RegisterStation{Stations: stations, Publisher: publisher},
 	}
-	return http.NewRouter(h), tasks, stations, packages, clock
+	return http.NewRouter(h, nil), tasks, stations, packages, clock
 }
 
 func doJSON(t *testing.T, srv stdhttp.Handler, method, path string, body any) *httptest.ResponseRecorder {
