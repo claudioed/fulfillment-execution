@@ -1,0 +1,37 @@
+# lefthook (github.com/evilmartians/lefthook) — local git hooks.
+#
+# One-time activation on a fresh clone:
+#   brew install lefthook        # or: go install github.com/evilmartians/lefthook@latest
+#   lefthook install
+#
+# The hooks only shell out to `make`, so they stay in lockstep with the
+# Makefile targets and, through it, with .github/workflows/ci.yml.
+# Nothing here needs a database: no integration or mutation runs in hooks.
+
+min_version: 1.5.0
+
+# pre-commit: the fast structural sensors only — keep committing snappy.
+pre-commit:
+  parallel: false
+  commands:
+    fmt-check:
+      run: |
+        command -v make >/dev/null 2>&1 || { echo "lefthook pre-commit: 'make' is not on PATH — install GNU make (xcode-select --install / apt install make)"; exit 1; }
+        command -v go >/dev/null 2>&1 || { echo "lefthook pre-commit: 'go' is not on PATH — install Go (see go.mod for the required version)"; exit 1; }
+        make fmt-check
+    vet:
+      run: make vet
+    lint:
+      # `make lint` itself fails loudly with install instructions when
+      # golangci-lint is missing, so a missing tool blocks the commit
+      # instead of silently passing.
+      run: make lint
+
+# pre-push: the last gate before code leaves the machine — adds build + test.
+pre-push:
+  parallel: false
+  commands:
+    check:
+      run: |
+        command -v make >/dev/null 2>&1 || { echo "lefthook pre-push: 'make' is not on PATH — install GNU make"; exit 1; }
+        make check

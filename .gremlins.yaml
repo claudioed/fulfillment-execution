@@ -1,0 +1,40 @@
+# gremlins (github.com/go-gremlins/gremlins) — mutation-testing sensor.
+#
+# Mutation testing answers the question coverage cannot: do the tests actually
+# ASSERT, or do they merely execute the code? This file makes both CI mutation
+# jobs reproducible and, via the thresholds below, turns the sensor into a
+# blocking quality gate instead of a report nobody reads.
+#
+# Picked up automatically from the module root by `gremlins unleash`.
+# Precedence is: command flags > env vars > this file.
+#
+# Used by:
+#   - the `mutation-fast` CI job  -> gremlins unleash ./internal/domain/task
+#     (every push/PR; blocking; ~30s locally, 15 mutants)
+#   - the `mutation` CI job       -> gremlins unleash ./internal/domain
+#     (workflow_dispatch/schedule only; exhaustive; ~1m30s locally, 31 mutants)
+#   - `make mutation-fast` / `make mutation` locally.
+
+silent: false
+
+unleash:
+  # Same execution profile the exhaustive CI job has always used, so a local
+  # run and a CI run produce the same mutants in the same order.
+  workers: 1
+  timeout-coefficient: 30
+
+  # Measured on 2026-08-23 with gremlins v0.6.0:
+  #   ./internal/domain/task -> 15 mutants, 15 killed, 0 lived
+  #                             efficacy 100.00%, mutant coverage 100.00%
+  #   ./internal/domain      -> 31 mutants, 29 killed, 2 lived
+  #                             efficacy  93.55%, mutant coverage 100.00%
+  #     (both survivors are CONDITIONALS_BOUNDARY in package/package.go, the
+  #      SLAM weight-tolerance comparison)
+  #
+  # The floor is set to 90 — at or below BOTH measurements, so it locks in
+  # today's quality for the fast subset and the exhaustive run alike without
+  # either starting red. Same spirit (and same number) as the 90% coverage
+  # gate in ci.yml: a regression gate, not an aspiration.
+  threshold:
+    efficacy: 90.0
+    mutant-coverage: 90.0

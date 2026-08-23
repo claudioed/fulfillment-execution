@@ -93,6 +93,29 @@ migrate -path migrations -database "$DATABASE_URL" up
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list, used by both the `WorkReleased` consumer and the `TaskCompleted` publisher |
 | `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` |
 
+## Local development / quality gate
+
+Every sensor CI runs is available locally through the `Makefile`, so problems
+get caught and self-corrected before they reach the pipeline:
+
+```sh
+make help          # list every target
+make check         # FAST pre-commit loop: fmt-check, vet, build, lint, test
+make check-all     # pre-push gate: check + coverage (90% gate), arch-test, bdd
+make vuln          # govulncheck ./... — known CVEs in deps and the Go stdlib
+make mutation-fast # blocking mutation subset (./internal/domain/task)
+make integration   # needs DATABASE_URL and a running Postgres
+```
+
+Git hooks are managed by [lefthook](https://github.com/evilmartians/lefthook)
+(`lefthook.yml`): `pre-commit` runs `make fmt-check vet lint`, `pre-push` runs
+`make check`. Activate them once per clone:
+
+```sh
+brew install lefthook          # or: go install github.com/evilmartians/lefthook@latest
+lefthook install
+```
+
 ## Tests
 
 ```sh

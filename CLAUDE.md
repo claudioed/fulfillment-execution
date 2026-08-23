@@ -107,3 +107,21 @@ JSON DTOs live in the http adapter; never leak domain structs.
 - README.md: run steps (compose/migrate/go run), endpoints w/ curl, layering note.
 - These invariants each have a failing-path test: at-most-once claim,
   capability-mismatch rejection, lease-expiry frees task, SLAM weight-diversion.
+
+## Local quality gate (run before every commit)
+
+- Run `make check` after making changes and **before committing**. It is the
+  fast self-correction loop: `fmt-check`, `vet`, `build`, `lint`, `test`.
+- Run `make check-all` before pushing for the fuller gate — `check` plus the
+  90% `coverage` gate, `arch-test`, and `bdd`.
+- Run `make vuln` (govulncheck) when touching `go.mod`/`go.sum`; a new CVE in
+  the dependency graph blocks CI.
+- `make mutation-fast` reruns the blocking mutation subset locally; thresholds
+  live in `.gremlins.yaml`. `make integration` needs `DATABASE_URL` and a
+  running Postgres, so it is deliberately outside `check`.
+- Git hooks (lefthook, `lefthook.yml`) enforce this automatically once someone
+  has run `lefthook install` on the machine — but run `make check` proactively
+  rather than relying on the hook firing.
+- Why: this keeps quality *left*. Every command above is the same sensor CI
+  runs, moved to where an agent can still self-correct, so problems are caught
+  before they reach a human or the pipeline.
