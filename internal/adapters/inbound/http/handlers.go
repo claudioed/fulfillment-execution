@@ -40,6 +40,7 @@ func toTaskResponse(t *task.Task) taskResponse {
 		CPT:                  t.CPT().Time(),
 		OrderRef:             string(t.OrderRef()),
 		RequiredCapabilities: caps,
+		Fragile:              t.Fragile(),
 	}
 	if lease := t.Lease(); lease != nil {
 		stationId := string(lease.StationId)
@@ -56,6 +57,7 @@ func toPackageResponse(p *pack.Package) packageResponse {
 		OrderRef:        string(p.OrderRef()),
 		Status:          string(p.Status()),
 		ScannedContents: p.ScannedContents(),
+		FragileHandling: p.FragileHandling(),
 	}
 }
 
@@ -88,7 +90,7 @@ func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 		caps[i] = shared.Capability(c)
 	}
 
-	t, err := h.CreateTask.Execute(r.Context(), task.Type(req.Type), shared.NewCPT(req.CPT), shared.OrderRef(req.OrderRef), shared.NewCapabilitySet(caps...))
+	t, err := h.CreateTask.Execute(r.Context(), task.Type(req.Type), shared.NewCPT(req.CPT), shared.OrderRef(req.OrderRef), shared.NewCapabilitySet(caps...), req.Fragile)
 	if err != nil {
 		writeError(w, r, err)
 		return

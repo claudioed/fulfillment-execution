@@ -34,8 +34,8 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 	}
 
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (id) DO UPDATE SET
 			task_type = EXCLUDED.task_type,
 			status = EXCLUDED.status,
@@ -43,15 +43,16 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 			order_ref = EXCLUDED.order_ref,
 			required_capabilities = EXCLUDED.required_capabilities,
 			lease_station_id = EXCLUDED.lease_station_id,
-			lease_expiry = EXCLUDED.lease_expiry
+			lease_expiry = EXCLUDED.lease_expiry,
+			fragile = EXCLUDED.fragile
 	`, string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
-		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry)
+		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry, t.Fragile())
 	return err
 }
 
 func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile
 		FROM tasks WHERE id = $1
 	`, string(id))
 	t, err := scanTask(row)
@@ -63,7 +64,7 @@ func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, 
 
 func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, now time.Time) ([]*task.Task, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile
 		FROM tasks
 		WHERE task_type = $1
 		  AND (status = 'PENDING' OR (status = 'CLAIMED' AND lease_expiry <= $2))
@@ -78,7 +79,7 @@ func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, 
 
 func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile
 		FROM tasks WHERE status = 'CLAIMED'
 	`)
 	if err != nil {
@@ -107,8 +108,9 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		requiredCapabilities           []string
 		leaseStationId                 *string
 		leaseExpiry                    *time.Time
+		fragile                        bool
 	)
-	if err := row.Scan(&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry); err != nil {
+	if err := row.Scan(&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile); err != nil {
 		return nil, err
 	}
 
@@ -125,6 +127,7 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		shared.OrderRef(orderRef),
 		sliceToCapabilities(requiredCapabilities),
 		lease,
+		fragile,
 	), nil
 }
 

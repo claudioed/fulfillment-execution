@@ -16,10 +16,13 @@ type CreateTask struct {
 	NewId     func() shared.TaskId
 }
 
-// Execute creates and persists the task, then publishes TaskCreated.
-func (uc *CreateTask) Execute(ctx context.Context, taskType task.Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet) (*task.Task, error) {
+// Execute creates and persists the task, then publishes TaskCreated. fragile
+// is the packing hint sourced from wes-work-planning at release time (itself
+// derived from inventory-storage's ProductClassification) — see
+// task.New for what it means and does not mean.
+func (uc *CreateTask) Execute(ctx context.Context, taskType task.Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool) (*task.Task, error) {
 	id := uc.NewId()
-	t := task.New(id, taskType, cpt, orderRef, required)
+	t := task.New(id, taskType, cpt, orderRef, required, fragile)
 	if err := uc.Tasks.Save(ctx, t); err != nil {
 		return nil, err
 	}

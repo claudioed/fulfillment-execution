@@ -65,10 +65,16 @@ type Task struct {
 	orderRef             shared.OrderRef
 	requiredCapabilities shared.CapabilitySet
 	lease                *Lease
+	fragile              bool
 }
 
-// New creates a task in the Pending state, ready for the pool.
-func New(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet) *Task {
+// New creates a task in the Pending state, ready for the pool. fragile is a
+// packing hint stamped by wes-work-planning at release time, sourced from
+// inventory-storage's ProductClassification: true if the upstream order
+// line was classified Fragile. It does not affect claiming or capability
+// matching — a Pack station later derives Package.FragileHandling from it
+// (see SealPackage).
+func New(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool) *Task {
 	return &Task{
 		id:                   id,
 		taskType:             taskType,
@@ -76,12 +82,13 @@ func New(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef shared.OrderR
 		cpt:                  cpt,
 		orderRef:             orderRef,
 		requiredCapabilities: required,
+		fragile:              fragile,
 	}
 }
 
 // Rehydrate reconstructs a Task from persisted state without re-validating
 // construction invariants (used by repository adapters).
-func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, lease *Lease) *Task {
+func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, lease *Lease, fragile bool) *Task {
 	return &Task{
 		id:                   id,
 		taskType:             taskType,
@@ -90,6 +97,7 @@ func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, o
 		orderRef:             orderRef,
 		requiredCapabilities: required,
 		lease:                lease,
+		fragile:              fragile,
 	}
 }
 
@@ -100,6 +108,12 @@ func (t *Task) CPT() shared.CPT                            { return t.cpt }
 func (t *Task) OrderRef() shared.OrderRef                  { return t.orderRef }
 func (t *Task) RequiredCapabilities() shared.CapabilitySet { return t.requiredCapabilities }
 func (t *Task) Lease() *Lease                              { return t.lease }
+
+// Fragile reports whether this task's upstream order line was classified
+// Fragile by inventory-storage's ProductClassification, as stamped by
+// wes-work-planning at release time. It is a packing hint for the Pack
+// path (see Package.FragileHandling) — it does not gate claiming.
+func (t *Task) Fragile() bool { return t.fragile }
 
 // IsAvailable reports whether the task can be claimed at `now`: it is
 // Pending, or Claimed with an expired lease (which frees it in the caller's

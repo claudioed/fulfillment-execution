@@ -1,0 +1,2 @@
+ALTER TABLE tasks ADD COLUMN fragile BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE packages ADD COLUMN fragile_handling BOOLEAN NOT NULL DEFAULT false;
