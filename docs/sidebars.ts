@@ -65,6 +65,12 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'AI Ecosystem (MCP)',
+      collapsed: false,
+      items: ['mcp/governance-charter'],
+    },
+    {
+      type: 'category',
       label: 'Architecture Decision Records (ADR)',
       collapsed: false,
       link: {type: 'doc', id: 'adr/index'},
@@ -76,6 +82,7 @@ const sidebars: SidebarsConfig = {
         'adr/0005-rfc-7807-problem-details',
         'adr/0006-arch-go-architecture-fitness-tests',
         'adr/0007-godog-bdd-acceptance-tests',
+        'adr/0008-mcp-inbound-adapter',
       ],
     },
   ],
