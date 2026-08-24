@@ -41,6 +41,7 @@ func newHarness(t *testing.T) *harness {
 	return &harness{
 		deps: Deps{
 			GetQueueDepth: &usecases.GetQueueDepth{Tasks: tasks},
+			CompleteTask:  &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
 			Tasks:         tasks,
 			Now:           clock.Now,
 		},
@@ -171,4 +172,70 @@ func TestDiagnoseStuckTasks(t *testing.T) {
 	if expired.Tasks[0].Reason == "" {
 		t.Fatal("expired task missing reason")
 	}
+}
+
+// completeHarness extends the base harness with the CompleteTask use case,
+// and seeds one PICK task claimed by station s1 so it is ready to complete.
+func completeHarness(t *testing.T) (*harness, string) {
+	t.Helper()
+	h := newHarness(t)
+	ctx := context.Background()
+	if _, err := h.station.Execute(ctx, "s1", []string{"pick"}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	h.seedPending(t, task.Pick, "o1", time.Hour, "pick")
+	claimed, err := h.claim.Execute(ctx, "s1", task.Pick)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	return h, string(claimed.Id())
+}
+
+func TestCompleteTask(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("owner completes claimed task", func(t *testing.T) {
+		h, taskId := completeHarness(t)
+		out, err := h.deps.completeTask(ctx, completeTaskInput{TaskId: taskId, StationId: "s1"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !out.Completed || out.TaskId != taskId {
+			t.Fatalf("unexpected output: %+v", out)
+		}
+	})
+
+	t.Run("double complete is rejected (at-most-once)", func(t *testing.T) {
+		h, taskId := completeHarness(t)
+		if _, err := h.deps.completeTask(ctx, completeTaskInput{TaskId: taskId, StationId: "s1"}); err != nil {
+			t.Fatalf("first complete failed: %v", err)
+		}
+		if _, err := h.deps.completeTask(ctx, completeTaskInput{TaskId: taskId, StationId: "s1"}); err == nil {
+			t.Fatal("second complete must be rejected by the at-most-once invariant")
+		}
+	})
+
+	t.Run("non-owner station is rejected", func(t *testing.T) {
+		h, taskId := completeHarness(t)
+		if _, err := h.deps.completeTask(ctx, completeTaskInput{TaskId: taskId, StationId: "intruder"}); err == nil {
+			t.Fatal("a station that does not own the claim must be rejected")
+		}
+	})
+
+	t.Run("missing args are rejected", func(t *testing.T) {
+		h, _ := completeHarness(t)
+		if _, err := h.deps.completeTask(ctx, completeTaskInput{TaskId: "", StationId: "s1"}); err == nil {
+			t.Fatal("empty taskId must be rejected")
+		}
+		if _, err := h.deps.completeTask(ctx, completeTaskInput{TaskId: "t1", StationId: ""}); err == nil {
+			t.Fatal("empty stationId must be rejected")
+		}
+	})
+
+	t.Run("unknown task is rejected", func(t *testing.T) {
+		h, _ := completeHarness(t)
+		if _, err := h.deps.completeTask(ctx, completeTaskInput{TaskId: "does-not-exist", StationId: "s1"}); err == nil {
+			t.Fatal("completing an unknown task must error")
+		}
+	})
 }

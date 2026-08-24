@@ -19,6 +19,7 @@ import (
 	"time"
 
 	inboundmcp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/mcp"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
@@ -76,10 +77,17 @@ func run() error {
 		taskRepo = postgres.NewTaskRepo(pool)
 	}
 
-	// The MCP adapter reuses the SAME GetQueueDepth use case the HTTP adapter
-	// uses, plus the read-only query port satisfied by the same TaskRepo.
+	// The MCP adapter reuses the SAME use cases the HTTP adapter uses:
+	// GetQueueDepth (read) and CompleteTask (write), plus the read-only query
+	// port satisfied by the same TaskRepo. CompleteTask needs a publisher and
+	// clock; the MCP server is not the platform's primary event publisher
+	// (cmd/execution is), so it logs the TaskCompleted event rather than
+	// publishing to Kafka.
+	publisher := events.NewLogPublisher(logger)
+	clock := memory.SystemClock{}
 	deps := inboundmcp.Deps{
 		GetQueueDepth: &usecases.GetQueueDepth{Tasks: taskRepo},
+		CompleteTask:  &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock},
 		Tasks:         taskRepo,
 		Now:           time.Now,
 	}
