@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
+	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
@@ -24,6 +25,10 @@ const tracerName = "github.com/claudioed/fulfillment-execution/internal/adapters
 type Deps struct {
 	// GetQueueDepth is the existing read-model use case, reused unchanged.
 	GetQueueDepth *usecases.GetQueueDepth
+	// CompleteTask is the existing write use case, reused unchanged. Its
+	// domain invariants (at-most-once, ownership) make a model-invoked
+	// completion safe by construction.
+	CompleteTask *usecases.CompleteTask
 	// Tasks is the read-only query port for richer diagnostics.
 	Tasks TaskQueries
 	// Now supplies the current time; injected so lease diagnostics are
@@ -138,51 +143,96 @@ func (d Deps) diagnoseStuckTasks(ctx context.Context, in diagnoseInput) (diagnos
 	return diagnoseOutput{Count: len(flagged), Tasks: flagged}, nil
 }
 
+// --- complete_task (write) ----------------------------------------------------
+
+type completeTaskInput struct {
+	TaskId    string `json:"taskId" jsonschema:"the id of the task to complete"`
+	StationId string `json:"stationId" jsonschema:"the id of the station that holds the active claim and is completing the task"`
+}
+
+type completeTaskOutput struct {
+	TaskId    string `json:"taskId"`
+	StationId string `json:"stationId"`
+	Completed bool   `json:"completed"`
+}
+
+func (d Deps) completeTask(ctx context.Context, in completeTaskInput) (completeTaskOutput, error) {
+	if in.TaskId == "" || in.StationId == "" {
+		return completeTaskOutput{}, fmt.Errorf("taskId and stationId are required")
+	}
+	err := d.CompleteTask.Execute(ctx, shared.TaskId(in.TaskId), shared.StationId(in.StationId))
+	if err != nil {
+		// The use case's domain errors (task not found, not owner, already
+		// completed, not claimed) surface unchanged as the tool error; the
+		// at-most-once and ownership invariants make a mistaken model call safe.
+		return completeTaskOutput{}, err
+	}
+	return completeTaskOutput{TaskId: in.TaskId, StationId: in.StationId, Completed: true}, nil
+}
+
 // --- registration -------------------------------------------------------------
 
-// registerTools adds every read tool to the server, each wrapped so its
-// handler runs inside an OTel span named "mcp.tool <name>" and is gated by the
-// session's scope. All three tools require only ScopeRead.
+// registerTools adds every tool to the server, each wrapped so its handler
+// runs inside an OTel span named "mcp.tool <name>" and is gated by the
+// session's scope. Read tools require ScopeRead; write tools require
+// ScopeReadWrite.
 func (d Deps) registerTools(server *mcp.Server, scopeOf func(context.Context) Scope) {
 	readOnly := true
 
-	addRead(server, scopeOf, &mcp.Tool{
+	addTool(server, scopeOf, ScopeRead, &mcp.Tool{
 		Name:        "get_queue_status",
 		Description: "Return the number of Pending tasks in a process-path queue (PICK, PACK, or SLAM).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.getQueueStatus)
 
-	addRead(server, scopeOf, &mcp.Tool{
+	addTool(server, scopeOf, ScopeRead, &mcp.Tool{
 		Name:        "find_claimable_work",
 		Description: "Return the highest-priority (earliest-CPT) task a station could claim now in a given process path, plus how many candidates exist.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.findClaimableWork)
 
-	addRead(server, scopeOf, &mcp.Tool{
+	addTool(server, scopeOf, ScopeRead, &mcp.Tool{
 		Name:        "diagnose_stuck_tasks",
 		Description: "List claimed tasks whose lease has expired (or expires within a given window), each with the reason it is flagged.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.diagnoseStuckTasks)
+
+	// Write tool: completes a claimed task. Requires the read-write scope and
+	// is annotated destructive (non-read-only, non-idempotent) so a host can
+	// see it changes state before letting a model call it. The domain
+	// invariants (at-most-once, ownership) bound the risk of a mistaken call.
+	destructive := true
+	notIdempotent := false
+	addTool(server, scopeOf, ScopeReadWrite, &mcp.Tool{
+		Name:        "complete_task",
+		Description: "Complete a claimed task on behalf of the station that holds its active claim. Rejected if the task is not found, not claimed, already completed, or the station does not own the claim.",
+		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: notIdempotent},
+	}, d.completeTask)
 }
 
-// addRead registers one read-scoped tool. It centralises the cross-cutting
-// concerns every tool shares: a span per call, scope enforcement, and mapping
-// a handler error onto the span before returning it.
-func addRead[In, Out any](
+// addTool registers one scope-gated tool. It centralises the cross-cutting
+// concerns every tool shares: a span per call, scope enforcement against the
+// tool's required minimum scope, and mapping a handler error onto the span
+// before returning it.
+func addTool[In, Out any](
 	server *mcp.Server,
 	scopeOf func(context.Context) Scope,
+	required Scope,
 	tool *mcp.Tool,
 	handle func(context.Context, In) (Out, error),
 ) {
 	mcp.AddTool(server, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
 		var zero Out
 		ctx, span := otel.Tracer(tracerName).Start(ctx, "mcp.tool "+tool.Name,
-			trace.WithAttributes(attribute.String("mcp.tool.name", tool.Name)),
+			trace.WithAttributes(
+				attribute.String("mcp.tool.name", tool.Name),
+				attribute.String("mcp.tool.required_scope", string(required)),
+			),
 		)
 		defer span.End()
 
-		if !scopeAllows(scopeOf(ctx), ScopeRead) {
-			err := fmt.Errorf("tool %q requires read scope", tool.Name)
+		if !scopeAllows(scopeOf(ctx), required) {
+			err := fmt.Errorf("tool %q requires %s scope", tool.Name, required)
 			span.SetStatus(codes.Error, "unauthorized")
 			return nil, zero, err
 		}
