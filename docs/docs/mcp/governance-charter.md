@@ -139,10 +139,15 @@ Jaeger and Grafana alongside HTTP.
    the platform's ≥90% coverage bar, plus at least one transport-level test.
 2. The MCP adapter **MUST** pass `make check` (fmt, vet, build, lint, test) and
    the arch-go fitness tests.
-3. **Phase-6 CI gate (planned):** a workflow that lints tool schemas, enforces
-   the naming conventions and mandatory annotations, and fails a PR that exceeds
-   the tool-count budget without justification — the left-shift equivalent of
-   `make check` for the MCP surface.
+3. **Phase-6 CI gate (implemented):** the governance rules in §2–§4 are
+   enforced computationally by `internal/adapters/inbound/mcp/governance_test.go`
+   — a plain `go test` that boots the server, lists its advertised tools, and
+   fails the build if the surface exceeds the tool-count budget, a tool is
+   mis-named, a write tool is not annotated destructive, or any tool lacks a
+   description or annotations. It runs inside the existing CI `test`/`arch-test`
+   jobs, so no new infrastructure is needed — the left-shift equivalent of
+   `make check` for the MCP surface. Each context copies this test; only the
+   import path and the `buildDeps` wiring change.
 
 ## 11. Changing this charter
 
