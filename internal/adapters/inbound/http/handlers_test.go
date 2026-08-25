@@ -84,11 +84,41 @@ func TestPostTask_CreatesTaskInPool(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
 	}
 	var created struct {
-		Id string `json:"id"`
+		Id      string `json:"id"`
+		Fragile bool   `json:"fragile"`
 	}
 	_ = json.NewDecoder(rec.Body).Decode(&created)
 	if got, want := rec.Header().Get("Location"), "/tasks/"+created.Id; got != want {
 		t.Fatalf("expected Location %q, got %q", want, got)
+	}
+	if created.Fragile {
+		t.Fatalf("expected fragile to default false when omitted from the request")
+	}
+}
+
+// The fragile packing hint round-trips through the create-task request and
+// response DTOs untouched — it is stamped by wes-work-planning, not derived
+// here.
+func TestPostTask_FragileFlagRoundTripsThroughResponse(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type":                 "PACK",
+		"cpt":                  time.Now().Add(time.Hour),
+		"orderRef":             "order-1",
+		"requiredCapabilities": []string{"pack"},
+		"fragile":              true,
+	})
+	if rec.Code != stdhttp.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Fragile bool `json:"fragile"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !created.Fragile {
+		t.Fatalf("expected fragile: true to round-trip in the response body")
 	}
 }
 
@@ -182,11 +212,15 @@ func TestPackAndSlamLifecycle(t *testing.T) {
 		t.Fatalf("expected 201, got %d: %s", sealRec.Code, sealRec.Body.String())
 	}
 	var sealed struct {
-		Id string `json:"id"`
+		Id              string `json:"id"`
+		FragileHandling bool   `json:"fragileHandling"`
 	}
 	_ = json.NewDecoder(sealRec.Body).Decode(&sealed)
 	if got, want := sealRec.Header().Get("Location"), "/packages/"+sealed.Id; got != want {
 		t.Fatalf("expected Location %q, got %q", want, got)
+	}
+	if sealed.FragileHandling {
+		t.Fatalf("expected fragileHandling false: the owning task was not fragile")
 	}
 
 	slamRec := doJSON(t, srv, stdhttp.MethodPost, "/packages/"+sealed.Id+"/slam", map[string]any{
@@ -194,6 +228,44 @@ func TestPackAndSlamLifecycle(t *testing.T) {
 	})
 	if slamRec.Code != stdhttp.StatusNoContent {
 		t.Fatalf("expected 204, got %d: %s", slamRec.Code, slamRec.Body.String())
+	}
+}
+
+// fragileHandling on the sealed Package response is derived from the
+// owning task's fragile flag, set at task creation, not from the
+// seal-package request body (which has no fragile field of its own).
+func TestPackLifecycle_FragileHandlingDerivedFromTask(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pack")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1",
+		"requiredCapabilities": []string{"pack"}, "fragile": true,
+	})
+
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	var claimed struct {
+		Id      string `json:"id"`
+		Fragile bool   `json:"fragile"`
+	}
+	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
+	if !claimed.Fragile {
+		t.Fatalf("expected the claimed task response to carry fragile: true")
+	}
+
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+		"stationId": "s1", "contents": []string{"sku-1"},
+	})
+	if sealRec.Code != stdhttp.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", sealRec.Code, sealRec.Body.String())
+	}
+	var sealed struct {
+		FragileHandling bool `json:"fragileHandling"`
+	}
+	if err := json.Unmarshal(sealRec.Body.Bytes(), &sealed); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !sealed.FragileHandling {
+		t.Fatalf("expected fragileHandling: true, derived from the fragile task")
 	}
 }
 

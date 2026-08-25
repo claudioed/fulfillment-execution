@@ -42,6 +42,14 @@ type WorkReleasedData struct {
 	WorkUnitId string    `json:"work_unit_id"`
 	CPT        time.Time `json:"cpt"`
 	Ref        string    `json:"ref"`
+	// Fragile is an optional packing hint set by wes-work-planning at
+	// release time, sourced from inventory-storage's ProductClassification
+	// (true if the upstream order line was classified Fragile). It is
+	// omitted, not required: any already-documented producer that predates
+	// this field simply does not send it, and it defaults to false — a
+	// known simplification for this round, matching the existing path_id
+	// prefix convention (see README's Integration section).
+	Fragile bool `json:"fragile"`
 }
 
 // Consumer reads WorkReleased events off warehouse.work-planning.events and
@@ -148,7 +156,7 @@ func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 	required := requiredCapabilities(taskType)
 	orderRef := shared.OrderRef(env.Data.WorkUnitId)
 
-	if _, err := c.CreateTask.Execute(ctx, taskType, shared.NewCPT(env.Data.CPT), orderRef, required); err != nil {
+	if _, err := c.CreateTask.Execute(ctx, taskType, shared.NewCPT(env.Data.CPT), orderRef, required, env.Data.Fragile); err != nil {
 		return fmt.Errorf("kafka: create task: %w", err)
 	}
 	return nil

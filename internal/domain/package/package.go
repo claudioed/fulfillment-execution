@@ -42,22 +42,32 @@ type Package struct {
 	orderRef        shared.OrderRef
 	status          Status
 	scannedContents []string
+	fragileHandling bool
 }
 
-// New creates an empty, open package for the given order.
-func New(id shared.PackageId, orderRef shared.OrderRef) *Package {
-	return &Package{id: id, orderRef: orderRef, status: Open}
+// New creates an empty, open package for the given order. fragileHandling is
+// derived from the owning Pack task's Fragile flag (itself stamped by
+// wes-work-planning from inventory-storage's ProductClassification) — true
+// if any of the package's scanned/sealed contents came from an order line
+// classified Fragile, so downstream packing/sortation can route it
+// accordingly.
+func New(id shared.PackageId, orderRef shared.OrderRef, fragileHandling bool) *Package {
+	return &Package{id: id, orderRef: orderRef, status: Open, fragileHandling: fragileHandling}
 }
 
 // Rehydrate reconstructs a Package from persisted state.
-func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, status Status, scannedContents []string) *Package {
-	return &Package{id: id, orderRef: orderRef, status: status, scannedContents: scannedContents}
+func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, status Status, scannedContents []string, fragileHandling bool) *Package {
+	return &Package{id: id, orderRef: orderRef, status: status, scannedContents: scannedContents, fragileHandling: fragileHandling}
 }
 
 func (p *Package) Id() shared.PackageId      { return p.id }
 func (p *Package) OrderRef() shared.OrderRef { return p.orderRef }
 func (p *Package) Status() Status            { return p.status }
 func (p *Package) ScannedContents() []string { return p.scannedContents }
+
+// FragileHandling reports whether this package requires fragile packing
+// care, derived at construction time from the owning task's Fragile flag.
+func (p *Package) FragileHandling() bool { return p.fragileHandling }
 
 // ScanItem records a scanned item as part of the package's contents.
 func (p *Package) ScanItem(sku string) error {

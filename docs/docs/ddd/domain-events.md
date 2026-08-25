@@ -157,3 +157,18 @@ Pushing it into the domain event would make the domain model shaped by a
 consumer's needs. The same repo-lookup-enrichment pattern is used in
 `inventory-storage`'s publisher for `ReservationRevoked`, so it is a platform
 convention rather than a local hack.
+
+## Fragile/FragileHandling did not extend any event payload
+
+The same "events stay thin" discipline applied when `Task.Fragile` and
+`Package.FragileHandling` were added: `TaskCreated` still carries only
+`TaskId`, and `PackageSealed` still carries only `PackageId`. Both flags are
+already visible on their aggregate's own GET response
+(`GET /tasks/{id}` — not yet a route today, but `TaskResponse` carries
+`fragile`; the `POST /tasks` and `claim-next` responses already do — and the
+`POST /tasks/{id}/seal-package` response carries `fragileHandling`), so
+nothing consuming these events in-process needs the value pushed onto the
+event itself. If a future external consumer needs `fragile` on the wire, the
+same repo-lookup-enrichment pattern used for `TaskCompleted`'s
+`work_unit_id` is the template to follow — enrich in the adapter, not the
+domain event.

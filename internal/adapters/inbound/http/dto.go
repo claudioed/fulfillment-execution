@@ -7,6 +7,7 @@ type createTaskRequest struct {
 	CPT                  time.Time `json:"cpt"`
 	OrderRef             string    `json:"orderRef"`
 	RequiredCapabilities []string  `json:"requiredCapabilities"`
+	Fragile              bool      `json:"fragile"`
 }
 
 // validate reports the first missing required field, or "" if the request
@@ -33,6 +34,7 @@ type taskResponse struct {
 	CPT                  time.Time  `json:"cpt"`
 	OrderRef             string     `json:"orderRef"`
 	RequiredCapabilities []string   `json:"requiredCapabilities"`
+	Fragile              bool       `json:"fragile"`
 	LeaseStationId       *string    `json:"leaseStationId,omitempty"`
 	LeaseExpiry          *time.Time `json:"leaseExpiry,omitempty"`
 }
@@ -90,6 +92,7 @@ type packageResponse struct {
 	OrderRef        string   `json:"orderRef"`
 	Status          string   `json:"status"`
 	ScannedContents []string `json:"scannedContents"`
+	FragileHandling bool     `json:"fragileHandling"`
 }
 
 type runSlamRequest struct {

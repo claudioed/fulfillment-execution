@@ -46,7 +46,7 @@ func TestTaskRepo_SaveAndFindById(t *testing.T) {
 
 	id := shared.TaskId("integration-task-1")
 	cpt := shared.NewCPT(time.Now().Add(time.Hour).Truncate(time.Microsecond))
-	tk := task.New(id, task.Pick, cpt, "order-1", shared.NewCapabilitySet("pick"))
+	tk := task.New(id, task.Pick, cpt, "order-1", shared.NewCapabilitySet("pick"), true)
 
 	if err := repo.Save(context.Background(), tk); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -61,6 +61,9 @@ func TestTaskRepo_SaveAndFindById(t *testing.T) {
 	if got.Status() != task.Pending {
 		t.Fatalf("expected Pending, got %s", got.Status())
 	}
+	if !got.Fragile() {
+		t.Fatalf("expected round-tripped Fragile() to be true")
+	}
 }
 
 // TaskRepo's query specific to this repo: FindClaimableByType, which backs
@@ -72,9 +75,9 @@ func TestTaskRepo_FindClaimableByType_OrdersByEarliestCPT(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Microsecond)
 
-	later := task.New("integration-task-claimable-later", task.Pick, shared.NewCPT(now.Add(2*time.Hour)), "order-later", shared.NewCapabilitySet("pick"))
-	earlier := task.New("integration-task-claimable-earlier", task.Pick, shared.NewCPT(now.Add(time.Hour)), "order-earlier", shared.NewCapabilitySet("pick"))
-	wrongType := task.New("integration-task-claimable-pack", task.Pack, shared.NewCPT(now.Add(30*time.Minute)), "order-pack", shared.NewCapabilitySet("pack"))
+	later := task.New("integration-task-claimable-later", task.Pick, shared.NewCPT(now.Add(2*time.Hour)), "order-later", shared.NewCapabilitySet("pick"), false)
+	earlier := task.New("integration-task-claimable-earlier", task.Pick, shared.NewCPT(now.Add(time.Hour)), "order-earlier", shared.NewCapabilitySet("pick"), false)
+	wrongType := task.New("integration-task-claimable-pack", task.Pack, shared.NewCPT(now.Add(30*time.Minute)), "order-pack", shared.NewCapabilitySet("pack"), false)
 	if err := repo.Save(ctx, later); err != nil {
 		t.Fatalf("Save(later): %v", err)
 	}
@@ -137,7 +140,7 @@ func TestPackageRepo_SaveAndFindById(t *testing.T) {
 	ctx := context.Background()
 
 	id := shared.PackageId("integration-package-1")
-	p := pack.New(id, "order-1")
+	p := pack.New(id, "order-1", true)
 	if err := p.ScanItem("sku-1"); err != nil {
 		t.Fatalf("ScanItem: %v", err)
 	}
@@ -160,6 +163,9 @@ func TestPackageRepo_SaveAndFindById(t *testing.T) {
 	}
 	if len(got.ScannedContents()) != 1 || got.ScannedContents()[0] != "sku-1" {
 		t.Fatalf("expected scanned contents [sku-1], got %v", got.ScannedContents())
+	}
+	if !got.FragileHandling() {
+		t.Fatalf("expected round-tripped FragileHandling() to be true")
 	}
 
 	// Package-specific: the SLAM weigh-check outcome (label vs. divert) must

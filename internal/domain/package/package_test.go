@@ -9,7 +9,7 @@ import (
 )
 
 func newPackage() *pack.Package {
-	return pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"))
+	return pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), false)
 }
 
 // Invariant: cannot seal without scanned contents.
@@ -124,7 +124,7 @@ func TestNew_Getters(t *testing.T) {
 }
 
 func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
-	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1", "sku-2"})
+	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1", "sku-2"}, false)
 	if p.Id() != shared.PackageId("p2") {
 		t.Fatalf("expected Id p2, got %s", p.Id())
 	}
@@ -136,5 +136,41 @@ func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
 	}
 	if len(p.ScannedContents()) != 2 {
 		t.Fatalf("expected 2 scanned contents, got %v", p.ScannedContents())
+	}
+}
+
+// FragileHandling is derived at construction time from the owning task's
+// Fragile flag; it must round-trip through both New and Rehydrate, and must
+// not depend on scanned contents or sealing.
+func TestNew_FragileHandling_RoundTrips(t *testing.T) {
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true)
+	if !p.FragileHandling() {
+		t.Fatalf("expected FragileHandling() to be true")
+	}
+}
+
+func TestNew_NotFragileHandlingByDefault(t *testing.T) {
+	p := newPackage()
+	if p.FragileHandling() {
+		t.Fatalf("expected FragileHandling() to be false when not requested")
+	}
+}
+
+func TestRehydrate_FragileHandling_RoundTrips(t *testing.T) {
+	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1"}, true)
+	if !p.FragileHandling() {
+		t.Fatalf("expected rehydrated FragileHandling() to be true")
+	}
+}
+
+// FragileHandling must not gate or otherwise affect the Seal invariant.
+func TestSeal_SucceedsRegardlessOfFragileHandling(t *testing.T) {
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true)
+	_ = p.ScanItem("sku-1")
+	if err := p.Seal(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.FragileHandling() {
+		t.Fatalf("expected FragileHandling() to remain true after seal")
 	}
 }

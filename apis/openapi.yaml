@@ -98,6 +98,7 @@ paths:
               cpt: "2026-01-01T18:00:00Z"
               orderRef: order-42
               requiredCapabilities: [pick]
+              fragile: false
       responses:
         "201":
           description: Task created and placed in the pending pool.
@@ -118,6 +119,7 @@ paths:
                 cpt: "2026-01-01T18:00:00Z"
                 orderRef: order-42
                 requiredCapabilities: [pick]
+                fragile: false
         "400":
           $ref: "#/components/responses/BadRequestNoInstance"
         "500":
@@ -219,6 +221,7 @@ paths:
                 cpt: "2026-01-01T18:00:00Z"
                 orderRef: order-42
                 requiredCapabilities: [pick]
+                fragile: false
                 leaseStationId: station-1
                 leaseExpiry: "2026-01-01T12:05:00Z"
         "400":
@@ -426,6 +429,7 @@ paths:
                 orderRef: order-42
                 status: SEALED
                 scannedContents: [sku-1, sku-2]
+                fragileHandling: false
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -704,16 +708,33 @@ components:
           example: order-42
         requiredCapabilities:
           type: array
-          description: Capabilities a claiming station's capability set must be a superset of.
+          description: >
+            Capabilities a claiming station's capability set must be a
+            superset of. This is an open, freeform list of strings, not a
+            closed enum — known values in active use include `pick`,
+            `pack`, `slam`, and `hazmat` (hazmat is matched by the same
+            generic capability-set mechanism as any other value; no special
+            handling exists or is needed for it).
           minItems: 1
           items:
             type: string
             example: pick
+        fragile:
+          type: boolean
+          default: false
+          description: >
+            A packing hint, not a placement or capability-matching signal:
+            true if this task's upstream order line was classified Fragile
+            by inventory-storage's ProductClassification concept, as
+            stamped onto the WorkReleased event by wes-work-planning at
+            release time. Optional and defaults to false for backward
+            compatibility with any producer that predates this field.
       example:
         type: PICK
         cpt: "2026-01-01T18:00:00Z"
         orderRef: order-42
         requiredCapabilities: [pick]
+        fragile: false
 
     TaskResponse:
       type: object
@@ -738,6 +759,12 @@ components:
           items:
             type: string
           example: [pick]
+        fragile:
+          type: boolean
+          description: >
+            Packing hint carried from task creation — see
+            CreateTaskRequest.fragile. Does not affect claiming.
+          example: false
         leaseStationId:
           type: string
           nullable: true
@@ -820,6 +847,14 @@ components:
           items:
             type: string
           example: [sku-1, sku-2]
+        fragileHandling:
+          type: boolean
+          description: >
+            Derived at seal time from the owning Pack task's `fragile`
+            flag (not an independent input to seal-package) — true if any
+            of the package's scanned/sealed contents came from an order
+            line classified Fragile upstream.
+          example: false
 
     RunSlamRequest:
       type: object

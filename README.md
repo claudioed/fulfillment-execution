@@ -243,9 +243,16 @@ curl -sX POST localhost:8080/tasks \
         "type": "PICK",
         "cpt": "2026-01-01T18:00:00Z",
         "orderRef": "order-42",
-        "requiredCapabilities": ["pick"]
+        "requiredCapabilities": ["pick"],
+        "fragile": false
       }'
 ```
+
+`fragile` is optional (defaults to `false`); it is a packing hint normally
+stamped by `wes-work-planning` at release time, not something a human caller
+typically sets by hand. `requiredCapabilities` may include `hazmat` — see
+[Integration](#integration) below and `docs/docs/adr/0009-fragile-and-hazmat-handling-flags.md`
+for why that needs no special handling beyond the value itself.
 
 ### Register a station
 
@@ -353,11 +360,12 @@ Identical across all four warehouse-systems services:
   "event_type": "WorkReleased",
   "occurred_at": "2026-08-21T22:00:00Z",
   "source": "wes-work-planning",
-  "data": {"path_id": "...", "work_unit_id": "...", "cpt": "RFC3339", "ref": "..."}
+  "data": {"path_id": "...", "work_unit_id": "...", "cpt": "RFC3339", "ref": "...", "fragile": false}
 }
 ```
 
-Messages whose `event_type` isn't `"WorkReleased"` are ignored.
+Messages whose `event_type` isn't `"WorkReleased"` are ignored. `data.fragile`
+is optional — see the Mapping section below.
 
 ### Mapping (known simplification)
 
@@ -371,7 +379,24 @@ anything else defaults to **Pick**. The rest of the mapping:
 | `data.path_id` (prefix) | task type (Pick/Pack/SLAM, default Pick)              |
 | `data.work_unit_id`     | `ref`                                                 |
 | `data.cpt`               | `cpt`                                                 |
+| `data.fragile` (optional, default `false`) | `fragile` — a packing hint, see below |
 | task type                | required capabilities (`pick`, `pack`, or `slam`)     |
+
+**`data.fragile` is optional** (another known simplification, same shape as
+the `path_id`-prefix rule above): it is sourced from
+`inventory-storage`'s `ProductClassification` concept and stamped by
+`wes-work-planning` at release time, but any already-documented producer that
+predates this field simply omits it, and the consumer defaults to `false`
+rather than rejecting the message. When present and `true`, it means the
+order line was classified Fragile upstream; this service threads it straight
+into the created `Task.Fragile` flag (no interpretation), and later derives
+`Package.FragileHandling` from it in `SealPackage` when the Pack task's
+contents are sealed. It does not affect claiming — a fragile task is claimed
+by capability match exactly like any other. It also has nothing to do with
+hazmat: hazmat is a `requiredCapabilities` value (`hazmat`), matched by the
+existing generic capability-set mechanism in `Task.Claim` / `RegisterStation`
+— no code change was needed there, only documentation (see
+`docs/docs/adr/0009-fragile-and-hazmat-handling-flags.md`).
 
 ### Idempotency
 

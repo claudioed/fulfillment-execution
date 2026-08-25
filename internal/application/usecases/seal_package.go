@@ -38,7 +38,7 @@ func (uc *SealPackage) Execute(ctx context.Context, taskId shared.TaskId, statio
 		return nil, task.ErrNotOwner
 	}
 
-	p := pack.New(uc.NewId(), t.OrderRef())
+	p := pack.New(uc.NewId(), t.OrderRef(), t.Fragile())
 	for _, sku := range contents {
 		if err := p.ScanItem(sku); err != nil {
 			return nil, err

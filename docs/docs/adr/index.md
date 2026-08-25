@@ -100,3 +100,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0006](./0006-arch-go-architecture-fitness-tests.md) | arch-go fitness tests to enforce the dependency rule | Accepted |
 | [0007](./0007-godog-bdd-acceptance-tests.md) | godog (Gherkin) acceptance tests for the invariants | Accepted |
 | [0008](./0008-mcp-inbound-adapter.md) | Model Context Protocol as an inbound adapter, not a new service | Accepted |
+| [0009](./0009-fragile-and-hazmat-handling-flags.md) | Fragile and hazmat handling flags carried on Task and Package | Accepted |
