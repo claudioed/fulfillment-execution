@@ -50,6 +50,18 @@ migrations/                  golang-migrate SQL files
 - **Package** — pack output: an order becomes a sealed carton. **SLAM weigh-check**:
   actual weight must be within tolerance of expected, else the package is diverted.
 - **Process path** — Pick / Pack / SLAM as named task types (queues), not steps.
+- **Fragile (packing hint)** — `Task.Fragile()` and the derived `Package.FragileHandling()`.
+  Stamped onto the Task by `wes-work-planning` at release time (from
+  `inventory-storage`'s `ProductClassification`, read once upstream — this
+  service never calls inventory-storage directly). `SealPackage` derives
+  `FragileHandling` from the owning task's flag, not a separate caller input.
+  Affects packing/downstream sortation only — it does NOT gate claiming.
+- **Hazmat (station capability)** — `"hazmat"` is a real, known value of the
+  existing open `Capability`/`CapabilitySet` type (see `claimNext` above).
+  A Task requiring hazmat handling sets it in `requiredCapabilities`; only a
+  Station registered with that capability can claim it. This already worked
+  via the pre-existing generic capability-matching mechanism — no structural
+  change was needed to support it (ADR-0009).
 
 ## Aggregates & invariants (enforce in domain, unit-tested)
 
@@ -67,11 +79,12 @@ WeightDiscrepancyDetected, LabelApplied, PackageDiverted.
 
 ## Use cases (application layer)
 
-1. CreateTask(type, cpt, ref, requiredCapabilities) -> Task in pool
+1. CreateTask(type, cpt, ref, requiredCapabilities, fragile) -> Task in pool
 2. ClaimNext(stationId, capabilities) -> leases + returns best-fit pending task
 3. RenewLease(taskId, stationId) -> extends lease
 4. CompleteTask(taskId, stationId) -> TaskCompleted (validates claim ownership)
-5. SealPackage(taskId, contents) -> Package (Pack path)
+5. SealPackage(taskId, contents) -> Package (Pack path); FragileHandling
+   derived from the task's Fragile flag
 6. RunSlam(packageId, actualWeight, expectedWeight) -> LabelApplied or Diverted
 7. GetQueueDepth(taskType) -> read model
 8. ExpireLeases(now) -> sweeps expired claims back to Pending (Clock-driven)
