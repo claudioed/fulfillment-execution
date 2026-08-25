@@ -35,6 +35,7 @@ type taskResponse struct {
 	OrderRef             string     `json:"orderRef"`
 	RequiredCapabilities []string   `json:"requiredCapabilities"`
 	Fragile              bool       `json:"fragile"`
+	GiftWrap             bool       `json:"giftWrap"`
 	LeaseStationId       *string    `json:"leaseStationId,omitempty"`
 	LeaseExpiry          *time.Time `json:"leaseExpiry,omitempty"`
 }
@@ -88,12 +89,13 @@ func (r sealPackageRequest) validate() string {
 }
 
 type packageResponse struct {
-	Id              string   `json:"id"`
-	OrderRef        string   `json:"orderRef"`
-	Status          string   `json:"status"`
-	ScannedContents []string `json:"scannedContents"`
-	FragileHandling bool     `json:"fragileHandling"`
-	SortLane        string   `json:"sortLane"`
+	Id                string   `json:"id"`
+	OrderRef          string   `json:"orderRef"`
+	Status            string   `json:"status"`
+	ScannedContents   []string `json:"scannedContents"`
+	FragileHandling   bool     `json:"fragileHandling"`
+	GiftWrapRequested bool     `json:"giftWrapRequested"`
+	SortLane          string   `json:"sortLane"`
 }
 
 type runSlamRequest struct {

@@ -61,7 +61,7 @@ func (uc *SealPackage) Execute(ctx context.Context, taskId shared.TaskId, statio
 		return nil, task.ErrNotOwner
 	}
 
-	p := pack.New(uc.NewId(), t.OrderRef(), t.Fragile())
+	p := pack.New(uc.NewId(), t.OrderRef(), t.Fragile(), t.GiftWrap())
 	for _, sku := range contents {
 		hazardClass := uc.lookupHazardClass(ctx, sku)
 		if err := p.ScanItemWithClass(sku, hazardClass); err != nil {

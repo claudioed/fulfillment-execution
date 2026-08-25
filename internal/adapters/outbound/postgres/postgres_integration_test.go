@@ -46,7 +46,7 @@ func TestTaskRepo_SaveAndFindById(t *testing.T) {
 
 	id := shared.TaskId("integration-task-1")
 	cpt := shared.NewCPT(time.Now().Add(time.Hour).Truncate(time.Microsecond))
-	tk := task.New(id, task.Pick, cpt, "order-1", shared.NewCapabilitySet("pick"), true)
+	tk := task.New(id, task.Pick, cpt, "order-1", shared.NewCapabilitySet("pick"), true, true)
 
 	if err := repo.Save(context.Background(), tk); err != nil {
 		t.Fatalf("Save: %v", err)
@@ -64,6 +64,9 @@ func TestTaskRepo_SaveAndFindById(t *testing.T) {
 	if !got.Fragile() {
 		t.Fatalf("expected round-tripped Fragile() to be true")
 	}
+	if !got.GiftWrap() {
+		t.Fatalf("expected round-tripped GiftWrap() to be true")
+	}
 }
 
 // TaskRepo's query specific to this repo: FindClaimableByType, which backs
@@ -75,9 +78,9 @@ func TestTaskRepo_FindClaimableByType_OrdersByEarliestCPT(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Microsecond)
 
-	later := task.New("integration-task-claimable-later", task.Pick, shared.NewCPT(now.Add(2*time.Hour)), "order-later", shared.NewCapabilitySet("pick"), false)
-	earlier := task.New("integration-task-claimable-earlier", task.Pick, shared.NewCPT(now.Add(time.Hour)), "order-earlier", shared.NewCapabilitySet("pick"), false)
-	wrongType := task.New("integration-task-claimable-pack", task.Pack, shared.NewCPT(now.Add(30*time.Minute)), "order-pack", shared.NewCapabilitySet("pack"), false)
+	later := task.New("integration-task-claimable-later", task.Pick, shared.NewCPT(now.Add(2*time.Hour)), "order-later", shared.NewCapabilitySet("pick"), false, false)
+	earlier := task.New("integration-task-claimable-earlier", task.Pick, shared.NewCPT(now.Add(time.Hour)), "order-earlier", shared.NewCapabilitySet("pick"), false, false)
+	wrongType := task.New("integration-task-claimable-pack", task.Pack, shared.NewCPT(now.Add(30*time.Minute)), "order-pack", shared.NewCapabilitySet("pack"), false, false)
 	if err := repo.Save(ctx, later); err != nil {
 		t.Fatalf("Save(later): %v", err)
 	}
@@ -140,7 +143,7 @@ func TestPackageRepo_SaveAndFindById(t *testing.T) {
 	ctx := context.Background()
 
 	id := shared.PackageId("integration-package-1")
-	p := pack.New(id, "order-1", true)
+	p := pack.New(id, "order-1", true, true)
 	if err := p.ScanItemWithClass("sku-1", 3); err != nil {
 		t.Fatalf("ScanItemWithClass: %v", err)
 	}
@@ -166,6 +169,9 @@ func TestPackageRepo_SaveAndFindById(t *testing.T) {
 	}
 	if !got.FragileHandling() {
 		t.Fatalf("expected round-tripped FragileHandling() to be true")
+	}
+	if !got.GiftWrapRequested() {
+		t.Fatalf("expected round-tripped GiftWrapRequested() to be true")
 	}
 	if len(got.ScannedHazardClasses()) != 1 || got.ScannedHazardClasses()[0] != 3 {
 		t.Fatalf("expected round-tripped ScannedHazardClasses() [3], got %v", got.ScannedHazardClasses())

@@ -66,6 +66,7 @@ type Task struct {
 	requiredCapabilities shared.CapabilitySet
 	lease                *Lease
 	fragile              bool
+	giftWrap             bool
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a
@@ -73,8 +74,12 @@ type Task struct {
 // inventory-storage's ProductClassification: true if the upstream order
 // line was classified Fragile. It does not affect claiming or capability
 // matching — a Pack station later derives Package.FragileHandling from it
-// (see SealPackage).
-func New(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool) *Task {
+// (see SealPackage). giftWrap is the same shape of packing hint, stamped by
+// wes-work-planning from an explicit gift-wrap request made at
+// work-enqueue time (not a product classification) — see ADR-0011. It
+// likewise does not affect claiming or capability matching — a Pack
+// station later derives Package.GiftWrapRequested from it.
+func New(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, fragile bool, giftWrap bool) *Task {
 	return &Task{
 		id:                   id,
 		taskType:             taskType,
@@ -83,12 +88,13 @@ func New(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef shared.OrderR
 		orderRef:             orderRef,
 		requiredCapabilities: required,
 		fragile:              fragile,
+		giftWrap:             giftWrap,
 	}
 }
 
 // Rehydrate reconstructs a Task from persisted state without re-validating
 // construction invariants (used by repository adapters).
-func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, lease *Lease, fragile bool) *Task {
+func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, lease *Lease, fragile bool, giftWrap bool) *Task {
 	return &Task{
 		id:                   id,
 		taskType:             taskType,
@@ -98,6 +104,7 @@ func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, o
 		requiredCapabilities: required,
 		lease:                lease,
 		fragile:              fragile,
+		giftWrap:             giftWrap,
 	}
 }
 
@@ -114,6 +121,16 @@ func (t *Task) Lease() *Lease                              { return t.lease }
 // wes-work-planning at release time. It is a packing hint for the Pack
 // path (see Package.FragileHandling) — it does not gate claiming.
 func (t *Task) Fragile() bool { return t.fragile }
+
+// GiftWrap reports whether this task's order was flagged for gift wrap at
+// work-enqueue time, as stamped by wes-work-planning onto WorkReleased's
+// optional data.gift_wrap field. Unlike Fragile, this is not sourced from
+// inventory-storage's ProductClassification — it is a caller-stated
+// characteristic of the released work itself. It is a packing hint for the
+// Pack path (see Package.GiftWrapRequested) — it does not gate claiming and,
+// deliberately unlike hazmat, is never used for station-eligibility/
+// capability matching (see ADR-0011).
+func (t *Task) GiftWrap() bool { return t.giftWrap }
 
 // IsAvailable reports whether the task can be claimed at `now`: it is
 // Pending, or Claimed with an expired lease (which frees it in the caller's

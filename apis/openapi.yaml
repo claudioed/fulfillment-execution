@@ -788,6 +788,16 @@ components:
             Packing hint carried from task creation — see
             CreateTaskRequest.fragile. Does not affect claiming.
           example: false
+        giftWrap:
+          type: boolean
+          description: >
+            Read-only packing hint: true if this task's order was flagged
+            for gift wrap at work-enqueue time. Unlike fragile, it has no
+            HTTP ingestion path — it arrives only via
+            WorkReleased.data.gift_wrap (see ADR-0011) and cannot be set
+            through POST /tasks. Does not affect claiming or capability
+            matching.
+          example: false
         leaseStationId:
           type: string
           nullable: true
@@ -877,6 +887,16 @@ components:
             flag (not an independent input to seal-package) — true if any
             of the package's scanned/sealed contents came from an order
             line classified Fragile upstream.
+          example: false
+        giftWrapRequested:
+          type: boolean
+          description: >
+            Derived at seal time from the owning Pack task's `giftWrap`
+            flag (not an independent input to seal-package, and not
+            restated by the station) — true if the order this package
+            fulfils was flagged for gift wrap at work-enqueue time. Unlike
+            hazmat, this is a packing concern only: it does not gate which
+            station may fulfil the order (see ADR-0011).
           example: false
         sortLane:
           $ref: "#/components/schemas/SortLane"

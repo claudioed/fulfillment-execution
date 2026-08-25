@@ -47,9 +47,9 @@ func newServer(t *testing.T) string {
 		return shared.TaskId([]byte{'t', byte('0' + n)})
 	}}
 	ctx := context.Background()
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(clock.Now().Add(time.Hour)), "o1", shared.NewCapabilitySet("pick"), false)
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(clock.Now().Add(2*time.Hour)), "o2", shared.NewCapabilitySet("pick"), false)
-	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(clock.Now().Add(time.Hour)), "o3", shared.NewCapabilitySet("pack"), false)
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(clock.Now().Add(time.Hour)), "o1", shared.NewCapabilitySet("pick"), false, false)
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(clock.Now().Add(2*time.Hour)), "o2", shared.NewCapabilitySet("pick"), false, false)
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(clock.Now().Add(time.Hour)), "o3", shared.NewCapabilitySet("pack"), false, false)
 
 	deps := inboundmcp.Deps{
 		GetQueueDepth: &usecases.GetQueueDepth{Tasks: tasks},
@@ -194,7 +194,7 @@ func newWriteServer(t *testing.T) (string, string) {
 	if _, err := register.Execute(ctx, "s1", []string{"pick"}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := create.Execute(ctx, task.Pick, shared.NewCPT(clock.Now().Add(time.Hour)), "o1", shared.NewCapabilitySet("pick"), false); err != nil {
+	if _, err := create.Execute(ctx, task.Pick, shared.NewCPT(clock.Now().Add(time.Hour)), "o1", shared.NewCapabilitySet("pick"), false, false); err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	claimed, err := claim.Execute(ctx, "s1", task.Pick)
