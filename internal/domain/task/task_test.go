@@ -19,6 +19,7 @@ func newPickTask() *task.Task {
 		shared.OrderRef("order-1"),
 		shared.NewCapabilitySet("pick"),
 		false,
+		false,
 	)
 }
 
@@ -238,7 +239,7 @@ func TestNew_Getters(t *testing.T) {
 
 func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
 	lease := &task.Lease{StationId: shared.StationId("s1"), Expiry: now.Add(time.Minute)}
-	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Claimed, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), lease, false)
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Claimed, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), lease, false, false)
 	if tk.Id() != shared.TaskId("t2") {
 		t.Fatalf("expected Id t2, got %s", tk.Id())
 	}
@@ -268,7 +269,7 @@ func TestIsAvailable(t *testing.T) {
 // time; it must round-trip through both New and Rehydrate and must not
 // affect claim/capability behavior.
 func TestNew_FragileFlag_RoundTrips(t *testing.T) {
-	tk := task.New(shared.TaskId("t1"), task.Pack, shared.NewCPT(now.Add(time.Hour)), shared.OrderRef("order-1"), shared.NewCapabilitySet("pack"), true)
+	tk := task.New(shared.TaskId("t1"), task.Pack, shared.NewCPT(now.Add(time.Hour)), shared.OrderRef("order-1"), shared.NewCapabilitySet("pack"), true, false)
 	if !tk.Fragile() {
 		t.Fatalf("expected Fragile() to be true")
 	}
@@ -282,7 +283,7 @@ func TestNew_NotFragileByDefault(t *testing.T) {
 }
 
 func TestRehydrate_FragileFlag_RoundTrips(t *testing.T) {
-	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Pending, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), nil, true)
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Pending, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), nil, true, false)
 	if !tk.Fragile() {
 		t.Fatalf("expected rehydrated Fragile() to be true")
 	}
@@ -290,7 +291,44 @@ func TestRehydrate_FragileFlag_RoundTrips(t *testing.T) {
 
 // Fragile must not influence Claim's capability-matching outcome.
 func TestClaim_FragileTaskStillMatchesOnCapabilitiesOnly(t *testing.T) {
-	tk := task.New(shared.TaskId("t1"), task.Pack, shared.NewCPT(now.Add(time.Hour)), shared.OrderRef("order-1"), shared.NewCapabilitySet("pack"), true)
+	tk := task.New(shared.TaskId("t1"), task.Pack, shared.NewCPT(now.Add(time.Hour)), shared.OrderRef("order-1"), shared.NewCapabilitySet("pack"), true, false)
+	if err := tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pack"), now, time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tk.Status() != task.Claimed {
+		t.Fatalf("expected Claimed, got %s", tk.Status())
+	}
+}
+
+// GiftWrap is a packing hint stamped by wes-work-planning at task-creation
+// time from a caller-stated WorkReleased.data.gift_wrap request; it must
+// round-trip through both New and Rehydrate and must not affect
+// claim/capability behavior (see ADR-0011).
+func TestNew_GiftWrapFlag_RoundTrips(t *testing.T) {
+	tk := task.New(shared.TaskId("t1"), task.Pack, shared.NewCPT(now.Add(time.Hour)), shared.OrderRef("order-1"), shared.NewCapabilitySet("pack"), false, true)
+	if !tk.GiftWrap() {
+		t.Fatalf("expected GiftWrap() to be true")
+	}
+}
+
+func TestNew_NotGiftWrapByDefault(t *testing.T) {
+	tk := newPickTask()
+	if tk.GiftWrap() {
+		t.Fatalf("expected GiftWrap() to be false when not requested")
+	}
+}
+
+func TestRehydrate_GiftWrapFlag_RoundTrips(t *testing.T) {
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Pending, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), nil, false, true)
+	if !tk.GiftWrap() {
+		t.Fatalf("expected rehydrated GiftWrap() to be true")
+	}
+}
+
+// GiftWrap must not influence Claim's capability-matching outcome —
+// deliberately unlike hazmat, no station-eligibility gating exists for it.
+func TestClaim_GiftWrapTaskStillMatchesOnCapabilitiesOnly(t *testing.T) {
+	tk := task.New(shared.TaskId("t1"), task.Pack, shared.NewCPT(now.Add(time.Hour)), shared.OrderRef("order-1"), shared.NewCapabilitySet("pack"), false, true)
 	if err := tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pack"), now, time.Minute); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

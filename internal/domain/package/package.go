@@ -61,6 +61,7 @@ type Package struct {
 	status               Status
 	scannedContents      []string
 	fragileHandling      bool
+	giftWrapRequested    bool
 	scannedHazardClasses []int
 }
 
@@ -69,9 +70,13 @@ type Package struct {
 // wes-work-planning from inventory-storage's ProductClassification) — true
 // if any of the package's scanned/sealed contents came from an order line
 // classified Fragile, so downstream packing/sortation can route it
-// accordingly.
-func New(id shared.PackageId, orderRef shared.OrderRef, fragileHandling bool) *Package {
-	return &Package{id: id, orderRef: orderRef, status: Open, fragileHandling: fragileHandling}
+// accordingly. giftWrapRequested is derived the same way from the owning
+// task's GiftWrap flag (itself stamped by wes-work-planning from an
+// explicit gift-wrap request made at work-enqueue time, not a product
+// classification) — see ADR-0011. Both flags are independently derived and
+// kept separate; neither is merged into the other.
+func New(id shared.PackageId, orderRef shared.OrderRef, fragileHandling bool, giftWrapRequested bool) *Package {
+	return &Package{id: id, orderRef: orderRef, status: Open, fragileHandling: fragileHandling, giftWrapRequested: giftWrapRequested}
 }
 
 // Rehydrate reconstructs a Package from persisted state. scannedHazardClasses
@@ -80,7 +85,7 @@ func New(id shared.PackageId, orderRef shared.OrderRef, fragileHandling bool) *P
 // at scan time — see ScanItemWithClass. A nil/empty slice is valid: it means
 // no scanned item in this package ever carried a hazard class (the common
 // case, and the only case for every package sealed before this feature).
-func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, status Status, scannedContents []string, fragileHandling bool, scannedHazardClasses []int) *Package {
+func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, status Status, scannedContents []string, fragileHandling bool, scannedHazardClasses []int, giftWrapRequested bool) *Package {
 	return &Package{
 		id:                   id,
 		orderRef:             orderRef,
@@ -88,6 +93,7 @@ func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, status Status, sca
 		scannedContents:      scannedContents,
 		fragileHandling:      fragileHandling,
 		scannedHazardClasses: scannedHazardClasses,
+		giftWrapRequested:    giftWrapRequested,
 	}
 }
 
@@ -108,6 +114,13 @@ func (p *Package) ScannedHazardClasses() []int { return p.scannedHazardClasses }
 // FragileHandling reports whether this package requires fragile packing
 // care, derived at construction time from the owning task's Fragile flag.
 func (p *Package) FragileHandling() bool { return p.fragileHandling }
+
+// GiftWrapRequested reports whether this package should be gift-wrapped,
+// derived at construction time from the owning task's GiftWrap flag. Unlike
+// hazmat, this is not a station-eligibility/capability concern — any
+// station may fulfill a gift-wrap request; it is a packing concern only,
+// same category as FragileHandling (see ADR-0011).
+func (p *Package) GiftWrapRequested() bool { return p.giftWrapRequested }
 
 // ScanItem records a scanned item as part of the package's contents, with no
 // DOT hazard class information (equivalent to ScanItemWithClass(sku, 0)).

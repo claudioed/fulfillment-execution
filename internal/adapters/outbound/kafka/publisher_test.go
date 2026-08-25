@@ -33,7 +33,7 @@ func (w *fakeWriter) WriteMessages(_ context.Context, msgs ...kafkago.Message) e
 
 func newTestTask(t *testing.T, tasks *memory.TaskRepo, orderRef shared.OrderRef) *task.Task {
 	t.Helper()
-	tk := task.New("task-1", task.Pick, shared.NewCPT(epoch.Add(time.Hour)), orderRef, shared.NewCapabilitySet("pick"), false)
+	tk := task.New("task-1", task.Pick, shared.NewCPT(epoch.Add(time.Hour)), orderRef, shared.NewCapabilitySet("pick"), false, false)
 	if err := tasks.Save(context.Background(), tk); err != nil {
 		t.Fatalf("save task: %v", err)
 	}

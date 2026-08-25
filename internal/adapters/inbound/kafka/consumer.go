@@ -50,6 +50,13 @@ type WorkReleasedData struct {
 	// known simplification for this round, matching the existing path_id
 	// prefix convention (see README's Integration section).
 	Fragile bool `json:"fragile"`
+	// GiftWrap is an optional packing hint set by wes-work-planning at
+	// work-enqueue time — a caller-stated request that this order's
+	// package be gift-wrapped, not a product classification. It is
+	// omitted, not required, and never published as explicit false: any
+	// producer that does not carry a gift-wrap request for the order
+	// simply omits the field, and it defaults to false (see ADR-0011).
+	GiftWrap bool `json:"gift_wrap"`
 }
 
 // Consumer reads WorkReleased events off warehouse.work-planning.events and
@@ -156,7 +163,7 @@ func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 	required := requiredCapabilities(taskType)
 	orderRef := shared.OrderRef(env.Data.WorkUnitId)
 
-	if _, err := c.CreateTask.Execute(ctx, taskType, shared.NewCPT(env.Data.CPT), orderRef, required, env.Data.Fragile); err != nil {
+	if _, err := c.CreateTask.Execute(ctx, taskType, shared.NewCPT(env.Data.CPT), orderRef, required, env.Data.Fragile, env.Data.GiftWrap); err != nil {
 		return fmt.Errorf("kafka: create task: %w", err)
 	}
 	return nil

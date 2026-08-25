@@ -84,6 +84,22 @@ func workReleasedJSONWithFragile(eventId, pathId, workUnitId string, fragile boo
 	}`)
 }
 
+func workReleasedJSONWithGiftWrap(eventId, pathId, workUnitId string, giftWrap bool) []byte {
+	return []byte(`{
+		"event_id": "` + eventId + `",
+		"event_type": "WorkReleased",
+		"occurred_at": "2026-08-21T22:00:00Z",
+		"source": "wes-work-planning",
+		"data": {
+			"path_id": "` + pathId + `",
+			"work_unit_id": "` + workUnitId + `",
+			"cpt": "2026-08-21T23:00:00Z",
+			"ref": "release-1",
+			"gift_wrap": ` + strconv.FormatBool(giftWrap) + `
+		}
+	}`)
+}
+
 func TestHandleMessage_CreatesTaskFromWorkReleased(t *testing.T) {
 	c, tasks := newConsumer(t)
 
@@ -209,5 +225,52 @@ func TestHandleMessage_MissingFragileFieldDefaultsFalse(t *testing.T) {
 	}
 	if candidates[0].Fragile() {
 		t.Fatalf("expected Fragile() == false when data.fragile is absent from the envelope")
+	}
+}
+
+// data.gift_wrap is optional on WorkReleased, omitted entirely (never
+// published as explicit false) when gift wrap was not requested — see
+// ADR-0011. Present-and-true must thread through to the created Task's
+// GiftWrap flag.
+func TestHandleMessage_ReadsOptionalGiftWrapFlag(t *testing.T) {
+	c, tasks := newConsumer(t)
+
+	err := c.HandleMessage(context.Background(), workReleasedJSONWithGiftWrap("evt-giftwrap", "pack-def", "wu-giftwrap", true))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	candidates, err := tasks.FindClaimableByType(context.Background(), task.Pack, epoch)
+	if err != nil {
+		t.Fatalf("FindClaimableByType: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected exactly 1 Pack task, got %d", len(candidates))
+	}
+	if !candidates[0].GiftWrap() {
+		t.Fatalf("expected the created task to carry GiftWrap() == true")
+	}
+}
+
+// Absent data.gift_wrap (the common case: any WorkReleased that does not
+// carry a gift-wrap request for the order) must default to false rather
+// than error or panic.
+func TestHandleMessage_MissingGiftWrapFieldDefaultsFalse(t *testing.T) {
+	c, tasks := newConsumer(t)
+
+	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-no-giftwrap", "pick-def", "wu-no-giftwrap"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	candidates, err := tasks.FindClaimableByType(context.Background(), task.Pick, epoch)
+	if err != nil {
+		t.Fatalf("FindClaimableByType: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected exactly 1 Pick task, got %d", len(candidates))
+	}
+	if candidates[0].GiftWrap() {
+		t.Fatalf("expected GiftWrap() == false when data.gift_wrap is absent from the envelope")
 	}
 }

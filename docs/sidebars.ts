@@ -85,6 +85,7 @@ const sidebars: SidebarsConfig = {
         'adr/0008-mcp-inbound-adapter',
         'adr/0009-fragile-and-hazmat-handling-flags',
         'adr/0010-package-segregation-and-sort-lane',
+        'adr/0011-gift-wrap-handling-flag',
       ],
     },
   ],

@@ -55,7 +55,7 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) seedPending(t *testing.T, tt task.Type, orderRef string, cptOffset time.Duration, cap string) {
 	t.Helper()
-	_, err := h.create.Execute(context.Background(), tt, shared.NewCPT(base.Add(cptOffset)), shared.OrderRef(orderRef), shared.NewCapabilitySet(shared.Capability(cap)), false)
+	_, err := h.create.Execute(context.Background(), tt, shared.NewCPT(base.Add(cptOffset)), shared.OrderRef(orderRef), shared.NewCapabilitySet(shared.Capability(cap)), false, false)
 	if err != nil {
 		t.Fatalf("seedPending: %v", err)
 	}

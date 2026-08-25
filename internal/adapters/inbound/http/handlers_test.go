@@ -122,6 +122,34 @@ func TestPostTask_FragileFlagRoundTripsThroughResponse(t *testing.T) {
 	}
 }
 
+// giftWrap on the task response is read-only: unlike fragile, it has
+// exactly one ingestion path (WorkReleased.data.gift_wrap via the Kafka
+// consumer — see ADR-0011), so POST /tasks always creates a task with
+// GiftWrap() == false regardless of what the request body says, and the
+// response reflects that.
+func TestPostTask_GiftWrapDefaultsFalseAndIsNotSettableViaHTTP(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type":                 "PACK",
+		"cpt":                  time.Now().Add(time.Hour),
+		"orderRef":             "order-1",
+		"requiredCapabilities": []string{"pack"},
+		"giftWrap":             true,
+	})
+	if rec.Code != stdhttp.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		GiftWrap bool `json:"giftWrap"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if created.GiftWrap {
+		t.Fatalf("expected giftWrap to remain false: it has no HTTP ingestion path, only Kafka")
+	}
+}
+
 func TestPostTask_MissingRequiredField_Returns400(t *testing.T) {
 	srv, _, _, _, _ := newTestServer()
 	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
@@ -266,6 +294,46 @@ func TestPackLifecycle_FragileHandlingDerivedFromTask(t *testing.T) {
 	}
 	if !sealed.FragileHandling {
 		t.Fatalf("expected fragileHandling: true, derived from the fragile task")
+	}
+}
+
+// giftWrapRequested on the sealed Package response is derived from the
+// owning task's GiftWrap flag, exactly like fragileHandling — and because
+// GiftWrap has no HTTP ingestion path (see ADR-0011), a task created via
+// POST /tasks always yields giftWrapRequested: false at seal time, even
+// when the task was fragile.
+func TestPackLifecycle_GiftWrapRequestedDefaultsFalseViaHTTP(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pack")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1",
+		"requiredCapabilities": []string{"pack"}, "fragile": true,
+	})
+
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	var claimed struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
+
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+		"stationId": "s1", "contents": []string{"sku-1"},
+	})
+	if sealRec.Code != stdhttp.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", sealRec.Code, sealRec.Body.String())
+	}
+	var sealed struct {
+		FragileHandling   bool `json:"fragileHandling"`
+		GiftWrapRequested bool `json:"giftWrapRequested"`
+	}
+	if err := json.Unmarshal(sealRec.Body.Bytes(), &sealed); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if !sealed.FragileHandling {
+		t.Fatalf("expected fragileHandling: true, derived from the fragile task")
+	}
+	if sealed.GiftWrapRequested {
+		t.Fatalf("expected giftWrapRequested: false — no HTTP path sets GiftWrap on the task")
 	}
 }
 

@@ -102,3 +102,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0008](./0008-mcp-inbound-adapter.md) | Model Context Protocol as an inbound adapter, not a new service | Accepted |
 | [0009](./0009-fragile-and-hazmat-handling-flags.md) | Fragile and hazmat handling flags carried on Task and Package | Accepted |
 | [0010](./0010-package-segregation-and-sort-lane.md) | Live per-item DOT hazard classification, same-package segregation, and SortLane | Accepted |
+| [0011](./0011-gift-wrap-handling-flag.md) | Gift wrap handling flag carried on Task and Package | Accepted |

@@ -9,7 +9,7 @@ import (
 )
 
 func newPackage() *pack.Package {
-	return pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), false)
+	return pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), false, false)
 }
 
 // Invariant: cannot seal without scanned contents.
@@ -124,7 +124,7 @@ func TestNew_Getters(t *testing.T) {
 }
 
 func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
-	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1", "sku-2"}, false, nil)
+	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1", "sku-2"}, false, nil, false)
 	if p.Id() != shared.PackageId("p2") {
 		t.Fatalf("expected Id p2, got %s", p.Id())
 	}
@@ -143,7 +143,7 @@ func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
 // Fragile flag; it must round-trip through both New and Rehydrate, and must
 // not depend on scanned contents or sealing.
 func TestNew_FragileHandling_RoundTrips(t *testing.T) {
-	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true)
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true, false)
 	if !p.FragileHandling() {
 		t.Fatalf("expected FragileHandling() to be true")
 	}
@@ -157,7 +157,7 @@ func TestNew_NotFragileHandlingByDefault(t *testing.T) {
 }
 
 func TestRehydrate_FragileHandling_RoundTrips(t *testing.T) {
-	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1"}, true, nil)
+	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1"}, true, nil, false)
 	if !p.FragileHandling() {
 		t.Fatalf("expected rehydrated FragileHandling() to be true")
 	}
@@ -165,13 +165,63 @@ func TestRehydrate_FragileHandling_RoundTrips(t *testing.T) {
 
 // FragileHandling must not gate or otherwise affect the Seal invariant.
 func TestSeal_SucceedsRegardlessOfFragileHandling(t *testing.T) {
-	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true)
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true, false)
 	_ = p.ScanItem("sku-1")
 	if err := p.Seal(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !p.FragileHandling() {
 		t.Fatalf("expected FragileHandling() to remain true after seal")
+	}
+}
+
+// GiftWrapRequested is derived at construction time from the owning task's
+// GiftWrap flag; it must round-trip through both New and Rehydrate, and
+// must not depend on scanned contents or sealing (see ADR-0011).
+func TestNew_GiftWrapRequested_RoundTrips(t *testing.T) {
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), false, true)
+	if !p.GiftWrapRequested() {
+		t.Fatalf("expected GiftWrapRequested() to be true")
+	}
+}
+
+func TestNew_NotGiftWrapRequestedByDefault(t *testing.T) {
+	p := newPackage()
+	if p.GiftWrapRequested() {
+		t.Fatalf("expected GiftWrapRequested() to be false when not requested")
+	}
+}
+
+func TestRehydrate_GiftWrapRequested_RoundTrips(t *testing.T) {
+	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1"}, false, nil, true)
+	if !p.GiftWrapRequested() {
+		t.Fatalf("expected rehydrated GiftWrapRequested() to be true")
+	}
+}
+
+// GiftWrapRequested must not gate or otherwise affect the Seal invariant.
+func TestSeal_SucceedsRegardlessOfGiftWrapRequested(t *testing.T) {
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), false, true)
+	_ = p.ScanItem("sku-1")
+	if err := p.Seal(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.GiftWrapRequested() {
+		t.Fatalf("expected GiftWrapRequested() to remain true after seal")
+	}
+}
+
+// FragileHandling and GiftWrapRequested are independently derived flags,
+// not merged into one — each must be settable without affecting the other.
+func TestNew_FragileHandlingAndGiftWrapRequested_AreIndependent(t *testing.T) {
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true, false)
+	if !p.FragileHandling() || p.GiftWrapRequested() {
+		t.Fatalf("expected fragile-only package to have FragileHandling=true, GiftWrapRequested=false, got %v/%v", p.FragileHandling(), p.GiftWrapRequested())
+	}
+
+	p2 := pack.New(shared.PackageId("p2"), shared.OrderRef("order-2"), false, true)
+	if p2.FragileHandling() || !p2.GiftWrapRequested() {
+		t.Fatalf("expected gift-wrap-only package to have FragileHandling=false, GiftWrapRequested=true, got %v/%v", p2.FragileHandling(), p2.GiftWrapRequested())
 	}
 }
 
@@ -307,7 +357,7 @@ func TestScanItemWithClass_RejectsAfterSeal(t *testing.T) {
 }
 
 func TestScanItemWithClass_HazardClassesRoundTripThroughRehydrate(t *testing.T) {
-	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1"}, false, []int{3})
+	p := pack.Rehydrate(shared.PackageId("p2"), shared.OrderRef("order-2"), pack.Sealed, []string{"sku-1"}, false, []int{3}, false)
 	got := p.ScannedHazardClasses()
 	if len(got) != 1 || got[0] != 3 {
 		t.Fatalf("expected rehydrated hazard classes [3], got %v", got)
@@ -317,15 +367,15 @@ func TestScanItemWithClass_HazardClassesRoundTripThroughRehydrate(t *testing.T) 
 // --- SortLane: priority-order truth table ---
 
 func TestSortLane_HazmatBeatsFragile(t *testing.T) {
-	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true) // fragile
-	_ = p.ScanItemWithClass("sku-1", 3)                                     // hazmat too
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true, false) // fragile
+	_ = p.ScanItemWithClass("sku-1", 3)                                            // hazmat too
 	if got := p.SortLane(); got != pack.SortLaneHazmat {
 		t.Fatalf("expected HAZMAT_LANE when both hazmat and fragile, got %s", got)
 	}
 }
 
 func TestSortLane_FragileOnly(t *testing.T) {
-	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true)
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), true, false)
 	_ = p.ScanItem("sku-1")
 	if got := p.SortLane(); got != pack.SortLaneFragileNoTilt {
 		t.Fatalf("expected FRAGILE_NO_TILT, got %s", got)
@@ -333,7 +383,7 @@ func TestSortLane_FragileOnly(t *testing.T) {
 }
 
 func TestSortLane_HazmatOnly(t *testing.T) {
-	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), false)
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), false, false)
 	_ = p.ScanItemWithClass("sku-1", 7)
 	if got := p.SortLane(); got != pack.SortLaneHazmat {
 		t.Fatalf("expected HAZMAT_LANE, got %s", got)
@@ -352,5 +402,15 @@ func TestSortLane_EmptyOpenPackageIsStandard(t *testing.T) {
 	p := newPackage()
 	if got := p.SortLane(); got != pack.SortLaneStandard {
 		t.Fatalf("expected STANDARD for a fresh package, got %s", got)
+	}
+}
+
+// GiftWrapRequested alone must not affect SortLane — it is a packing
+// concern, not a sortation-routing input (deliberately unlike fragile).
+func TestSortLane_GiftWrapOnlyIsStandard(t *testing.T) {
+	p := pack.New(shared.PackageId("p1"), shared.OrderRef("order-1"), false, true)
+	_ = p.ScanItem("sku-1")
+	if got := p.SortLane(); got != pack.SortLaneStandard {
+		t.Fatalf("expected STANDARD when only gift-wrap is set, got %s", got)
 	}
 }
