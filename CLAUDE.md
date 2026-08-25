@@ -62,6 +62,20 @@ migrations/                  golang-migrate SQL files
   Station registered with that capability can claim it. This already worked
   via the pre-existing generic capability-matching mechanism — no structural
   change was needed to support it (ADR-0009).
+- **Package segregation & SortLane (ADR-0010)** — `SealPackage` performs a
+  LIVE, synchronous per-scanned-SKU classification lookup (new outbound port
+  `ports.ProductClassificationLookup`, permissive-by-default HTTP adapter
+  mirroring inventory-storage's own `facilitylayout` pattern:
+  `PRODUCT_CLASSIFICATION_MODE=http|permissive`) — NOT a value stamped onto
+  the Task at release time, because a Pack task's contents (which SKUs get
+  scanned into it) are only known live at the scan station, not at release.
+  `Package.ScanItemWithClass` rejects a scan whose DOT hazard class is
+  incompatible (same 9×9 matrix as inventory-storage, duplicated by
+  deliberate cross-repo convention) with an already-scanned item's class,
+  raising `ErrPackageSegregationViolation`. `Package.SortLane()` derives
+  `HAZMAT_LANE` > `FRAGILE_NO_TILT` > `STANDARD` (hazmat always wins) — a
+  WES-tier routing DECISION only; no WCS device/conveyor execution exists
+  or is planned in this workspace.
 
 ## Aggregates & invariants (enforce in domain, unit-tested)
 
@@ -84,7 +98,9 @@ WeightDiscrepancyDetected, LabelApplied, PackageDiverted.
 3. RenewLease(taskId, stationId) -> extends lease
 4. CompleteTask(taskId, stationId) -> TaskCompleted (validates claim ownership)
 5. SealPackage(taskId, contents) -> Package (Pack path); FragileHandling
-   derived from the task's Fragile flag
+   derived from the task's Fragile flag; performs a live per-SKU DOT hazard
+   classification lookup and rejects on same-package segregation violation
+   (ADR-0010)
 6. RunSlam(packageId, actualWeight, expectedWeight) -> LabelApplied or Diverted
 7. GetQueueDepth(taskType) -> read model
 8. ExpireLeases(now) -> sweeps expired claims back to Pending (Clock-driven)
