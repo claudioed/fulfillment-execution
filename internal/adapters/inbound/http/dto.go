@@ -93,6 +93,7 @@ type packageResponse struct {
 	Status          string   `json:"status"`
 	ScannedContents []string `json:"scannedContents"`
 	FragileHandling bool     `json:"fragileHandling"`
+	SortLane        string   `json:"sortLane"`
 }
 
 type runSlamRequest struct {

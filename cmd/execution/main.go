@@ -19,6 +19,7 @@ import (
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/productclassification"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
@@ -121,6 +122,7 @@ func run() error {
 		publisher = events.NewLogPublisher(logger)
 	}
 	clock := memory.SystemClock{}
+	classificationLookup := buildClassificationLookup(getenv("PRODUCT_CLASSIFICATION_MODE", "permissive"), os.Getenv("INVENTORY_STORAGE_BASE_URL"), logger)
 
 	createTask := &usecases.CreateTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId}
 
@@ -129,7 +131,7 @@ func run() error {
 		ClaimNext:       &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
 		RenewLease:      &usecases.RenewLease{Tasks: taskRepo, Clock: clock},
 		CompleteTask:    &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
-		SealPackage:     &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId},
+		SealPackage:     &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId, ClassificationLookup: classificationLookup},
 		RunSlam:         &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock},
 		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: taskRepo},
 		ExpireLeases:    &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock},
@@ -209,6 +211,21 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// buildClassificationLookup selects the outbound
+// ports.ProductClassificationLookup adapter via PRODUCT_CLASSIFICATION_MODE
+// (http|permissive), defaulting to "permissive" so existing tests, CI and
+// deployments that do not set the env var are unaffected — mirrors
+// inventory-storage's own LOCATION_LOOKUP_MODE=http|permissive pattern for
+// its facilitylayout adapter (see ADR-0010). "http" requires
+// INVENTORY_STORAGE_BASE_URL.
+func buildClassificationLookup(mode, inventoryStorageBaseURL string, logger *slog.Logger) ports.ProductClassificationLookup {
+	if !strings.EqualFold(mode, "http") {
+		return productclassification.NewPermissiveLookup()
+	}
+	logger.Info("product classification lookup configured", "mode", "http", "inventory_storage_base_url", inventoryStorageBaseURL)
+	return productclassification.NewClient(inventoryStorageBaseURL, nil)
 }
 
 func newTaskId() shared.TaskId {

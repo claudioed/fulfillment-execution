@@ -42,6 +42,7 @@ func statusFor(err error) int {
 		errors.Is(err, pack.ErrAlreadySealed),
 		errors.Is(err, pack.ErrAlreadyProcessed),
 		errors.Is(err, pack.ErrNotSealed),
+		errors.Is(err, pack.ErrPackageSegregationViolation),
 		errors.Is(err, usecases.ErrNoClaimableTask):
 		return http.StatusConflict
 
@@ -86,6 +87,8 @@ func problemTypeAndTitle(err error) (slug, title string) {
 		return "package-already-processed", "Package SLAM already processed"
 	case errors.Is(err, pack.ErrNotSealed):
 		return "package-not-sealed", "Package must be sealed before SLAM"
+	case errors.Is(err, pack.ErrPackageSegregationViolation):
+		return "package-segregation-violation", "Scanned item's DOT hazard class is incompatible with an already-scanned item"
 	case errors.Is(err, usecases.ErrNoClaimableTask):
 		return "no-claimable-task", "No claimable task for station capabilities"
 

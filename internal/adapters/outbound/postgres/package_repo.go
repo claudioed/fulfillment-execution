@@ -23,10 +23,10 @@ func NewPackageRepo(pool *pgxpool.Pool) *PackageRepo {
 
 func (r *PackageRepo) Save(ctx context.Context, p *pack.Package) error {
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO packages (id, order_ref, status, scanned_contents, fragile_handling)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (id) DO UPDATE SET order_ref = EXCLUDED.order_ref, status = EXCLUDED.status, scanned_contents = EXCLUDED.scanned_contents, fragile_handling = EXCLUDED.fragile_handling
-	`, string(p.Id()), string(p.OrderRef()), string(p.Status()), p.ScannedContents(), p.FragileHandling())
+		INSERT INTO packages (id, order_ref, status, scanned_contents, fragile_handling, scanned_hazard_classes)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (id) DO UPDATE SET order_ref = EXCLUDED.order_ref, status = EXCLUDED.status, scanned_contents = EXCLUDED.scanned_contents, fragile_handling = EXCLUDED.fragile_handling, scanned_hazard_classes = EXCLUDED.scanned_hazard_classes
+	`, string(p.Id()), string(p.OrderRef()), string(p.Status()), p.ScannedContents(), p.FragileHandling(), p.ScannedHazardClasses())
 	return err
 }
 
@@ -35,15 +35,16 @@ func (r *PackageRepo) FindById(ctx context.Context, id shared.PackageId) (*pack.
 		packageId, orderRef, status string
 		scannedContents             []string
 		fragileHandling             bool
+		scannedHazardClasses        []int
 	)
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, order_ref, status, scanned_contents, fragile_handling FROM packages WHERE id = $1
-	`, string(id)).Scan(&packageId, &orderRef, &status, &scannedContents, &fragileHandling)
+		SELECT id, order_ref, status, scanned_contents, fragile_handling, scanned_hazard_classes FROM packages WHERE id = $1
+	`, string(id)).Scan(&packageId, &orderRef, &status, &scannedContents, &fragileHandling, &scannedHazardClasses)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	return pack.Rehydrate(shared.PackageId(packageId), shared.OrderRef(orderRef), pack.Status(status), scannedContents, fragileHandling), nil
+	return pack.Rehydrate(shared.PackageId(packageId), shared.OrderRef(orderRef), pack.Status(status), scannedContents, fragileHandling, scannedHazardClasses), nil
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
@@ -136,4 +137,30 @@ func (m *recordingMetrics) TaskClaimed(_ context.Context, taskType task.Type) {
 
 func (m *recordingMetrics) TaskCompleted(_ context.Context, taskType task.Type) {
 	m.completed = append(m.completed, taskType)
+}
+
+// fakeClassificationLookup is a ports.ProductClassificationLookup test
+// double: pre-programmed per-SKU responses, with an optional forced error
+// for one SKU, so SealPackage's fail-open-per-item behaviour can be
+// exercised without a real HTTP call.
+type fakeClassificationLookup struct {
+	bySKU   map[string]ports.ClassificationInfo
+	failFor map[string]bool
+	calls   []string
+}
+
+func newFakeClassificationLookup() *fakeClassificationLookup {
+	return &fakeClassificationLookup{bySKU: map[string]ports.ClassificationInfo{}, failFor: map[string]bool{}}
+}
+
+func (f *fakeClassificationLookup) GetClassification(_ context.Context, sku string) (ports.ClassificationInfo, error) {
+	f.calls = append(f.calls, sku)
+	if f.failFor[sku] {
+		return ports.ClassificationInfo{}, errFake
+	}
+	info, ok := f.bySKU[sku]
+	if !ok {
+		return ports.ClassificationInfo{Known: false}, nil
+	}
+	return info, nil
 }
