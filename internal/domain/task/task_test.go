@@ -18,6 +18,7 @@ func newPickTask() *task.Task {
 		shared.NewCPT(now.Add(time.Hour)),
 		shared.OrderRef("order-1"),
 		shared.NewCapabilitySet("pick"),
+		false,
 	)
 }
 
@@ -237,7 +238,7 @@ func TestNew_Getters(t *testing.T) {
 
 func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
 	lease := &task.Lease{StationId: shared.StationId("s1"), Expiry: now.Add(time.Minute)}
-	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Claimed, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), lease)
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Claimed, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), lease, false)
 	if tk.Id() != shared.TaskId("t2") {
 		t.Fatalf("expected Id t2, got %s", tk.Id())
 	}
@@ -260,5 +261,40 @@ func TestIsAvailable(t *testing.T) {
 	}
 	if !tk.IsAvailable(now.Add(2 * time.Minute)) {
 		t.Fatalf("task with expired lease should be available")
+	}
+}
+
+// Fragile is a packing hint stamped by wes-work-planning at task-creation
+// time; it must round-trip through both New and Rehydrate and must not
+// affect claim/capability behavior.
+func TestNew_FragileFlag_RoundTrips(t *testing.T) {
+	tk := task.New(shared.TaskId("t1"), task.Pack, shared.NewCPT(now.Add(time.Hour)), shared.OrderRef("order-1"), shared.NewCapabilitySet("pack"), true)
+	if !tk.Fragile() {
+		t.Fatalf("expected Fragile() to be true")
+	}
+}
+
+func TestNew_NotFragileByDefault(t *testing.T) {
+	tk := newPickTask()
+	if tk.Fragile() {
+		t.Fatalf("expected Fragile() to be false when not requested")
+	}
+}
+
+func TestRehydrate_FragileFlag_RoundTrips(t *testing.T) {
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Pending, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), nil, true)
+	if !tk.Fragile() {
+		t.Fatalf("expected rehydrated Fragile() to be true")
+	}
+}
+
+// Fragile must not influence Claim's capability-matching outcome.
+func TestClaim_FragileTaskStillMatchesOnCapabilitiesOnly(t *testing.T) {
+	tk := task.New(shared.TaskId("t1"), task.Pack, shared.NewCPT(now.Add(time.Hour)), shared.OrderRef("order-1"), shared.NewCapabilitySet("pack"), true)
+	if err := tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pack"), now, time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tk.Status() != task.Claimed {
+		t.Fatalf("expected Claimed, got %s", tk.Status())
 	}
 }

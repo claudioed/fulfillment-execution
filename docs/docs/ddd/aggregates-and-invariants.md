@@ -24,11 +24,13 @@ classDiagram
         -OrderRef orderRef
         -CapabilitySet requiredCapabilities
         -Lease* lease
+        -bool fragile
         +Claim(stationId, capabilities, now, duration) error
         +RenewLease(stationId, now, duration) error
         +Complete(stationId, now) error
         +ExpireLeaseIfDue(now) bool
         +IsAvailable(now) bool
+        +Fragile() bool
     }
     class Lease {
         <<Value Object>>
@@ -51,9 +53,11 @@ classDiagram
         -OrderRef orderRef
         -Status status : OPEN|SEALED|LABELED|DIVERTED
         -string[] scannedContents
+        -bool fragileHandling
         +ScanItem(sku) error
         +Seal() error
         +Weigh(expected, actual) (bool, error)
+        +FragileHandling() bool
     }
     Task *-- Lease : at most one
     Task ..> Station : capability match only
@@ -183,3 +187,30 @@ Queue depth is computed from task state on every request via
 counter field on any aggregate, and nothing to keep in sync. The same applies
 to any future throughput metric: derive it from the events, do not store it on
 the thing the events are about.
+
+## Product-classification-derived handling flags
+
+Two flags carry product-classification information from upstream, added on
+`Task` and `Package` respectively — neither is a new aggregate, and neither
+changes an existing invariant:
+
+- **`Task.Fragile()`** — set once at construction (`task.New`, threaded
+  through `CreateTask`), stamped by `wes-work-planning` at release time from
+  `inventory-storage`'s `ProductClassification` concept. It does not gate
+  `Claim` — a fragile task claims exactly like any other, on capabilities
+  alone.
+- **`Package.FragileHandling()`** — set once at construction (`pack.New`),
+  derived by `SealPackage` from the owning task's `Fragile` flag rather than
+  accepted as a separate caller-supplied argument. This keeps the derivation
+  in one place: the flag rides in on the Task the same way CPT and
+  `requiredCapabilities` already do, and `SealPackage` — which already loads
+  the Task to validate claim ownership — reads it off that same load.
+
+Hazmat handling needed **no structural change**: `requiredCapabilities`
+already accepts arbitrary capability strings, `Task.Claim`'s
+`CapabilitySet.HasAll` check already enforces them, and `RegisterStation`
+already accepts arbitrary capabilities for a station. `hazmat` is simply
+documented as a known value in the [ubiquitous
+language](../business-context/ubiquitous-language.md) — the mechanism
+already existed. See [ADR-0009](../adr/0009-fragile-and-hazmat-handling-flags.md)
+for the full reasoning.
