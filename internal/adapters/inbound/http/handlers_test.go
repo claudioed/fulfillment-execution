@@ -269,6 +269,67 @@ func TestPackLifecycle_FragileHandlingDerivedFromTask(t *testing.T) {
 	}
 }
 
+// sortLane on the sealed Package response reflects the priority-order
+// derivation: a fragile task with no hazmat-classified scanned items (the
+// only classification a station without a wired lookup can produce, since
+// newTestServer's SealPackage has no ClassificationLookup) resolves to
+// FRAGILE_NO_TILT — see Package.SortLane and ADR-0010.
+func TestPackLifecycle_SortLaneFragileNoTiltWhenFragileAndNoHazmat(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pack")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1",
+		"requiredCapabilities": []string{"pack"}, "fragile": true,
+	})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	var claimed struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
+
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+		"stationId": "s1", "contents": []string{"sku-1"},
+	})
+	var sealed struct {
+		SortLane string `json:"sortLane"`
+	}
+	if err := json.Unmarshal(sealRec.Body.Bytes(), &sealed); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if sealed.SortLane != "FRAGILE_NO_TILT" {
+		t.Fatalf("expected sortLane FRAGILE_NO_TILT, got %q", sealed.SortLane)
+	}
+}
+
+// sortLane is STANDARD when the sealed package is neither hazmat nor
+// fragile.
+func TestPackLifecycle_SortLaneStandardWhenNeitherHazmatNorFragile(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pack")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PACK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1",
+		"requiredCapabilities": []string{"pack"},
+	})
+	claimRec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PACK"})
+	var claimed struct {
+		Id string `json:"id"`
+	}
+	_ = json.NewDecoder(claimRec.Body).Decode(&claimed)
+
+	sealRec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/"+claimed.Id+"/seal-package", map[string]any{
+		"stationId": "s1", "contents": []string{"sku-1"},
+	})
+	var sealed struct {
+		SortLane string `json:"sortLane"`
+	}
+	if err := json.Unmarshal(sealRec.Body.Bytes(), &sealed); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if sealed.SortLane != "STANDARD" {
+		t.Fatalf("expected sortLane STANDARD, got %q", sealed.SortLane)
+	}
+}
+
 func TestGetQueueDepth(t *testing.T) {
 	srv, _, _, _, clock := newTestServer()
 	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{

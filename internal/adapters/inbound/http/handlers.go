@@ -58,6 +58,7 @@ func toPackageResponse(p *pack.Package) packageResponse {
 		Status:          string(p.Status()),
 		ScannedContents: p.ScannedContents(),
 		FragileHandling: p.FragileHandling(),
+		SortLane:        p.SortLane(),
 	}
 }
 

@@ -141,8 +141,8 @@ func TestPackageRepo_SaveAndFindById(t *testing.T) {
 
 	id := shared.PackageId("integration-package-1")
 	p := pack.New(id, "order-1", true)
-	if err := p.ScanItem("sku-1"); err != nil {
-		t.Fatalf("ScanItem: %v", err)
+	if err := p.ScanItemWithClass("sku-1", 3); err != nil {
+		t.Fatalf("ScanItemWithClass: %v", err)
 	}
 	if err := p.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
@@ -166,6 +166,12 @@ func TestPackageRepo_SaveAndFindById(t *testing.T) {
 	}
 	if !got.FragileHandling() {
 		t.Fatalf("expected round-tripped FragileHandling() to be true")
+	}
+	if len(got.ScannedHazardClasses()) != 1 || got.ScannedHazardClasses()[0] != 3 {
+		t.Fatalf("expected round-tripped ScannedHazardClasses() [3], got %v", got.ScannedHazardClasses())
+	}
+	if got.SortLane() != pack.SortLaneHazmat {
+		t.Fatalf("expected SortLane() HAZMAT_LANE, got %s", got.SortLane())
 	}
 
 	// Package-specific: the SLAM weigh-check outcome (label vs. divert) must

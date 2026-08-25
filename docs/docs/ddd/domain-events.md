@@ -172,3 +172,17 @@ event itself. If a future external consumer needs `fragile` on the wire, the
 same repo-lookup-enrichment pattern used for `TaskCompleted`'s
 `work_unit_id` is the template to follow — enrich in the adapter, not the
 domain event.
+
+## `SortLane` did not extend any event payload either
+
+[ADR-0010](../adr/0010-package-segregation-and-sort-lane.md) made the
+identical judgement call for `Package.SortLane()`: `PackageSealed` and
+`LabelApplied` still carry only `PackageId`. `SortLane` is fully visible
+on the `POST /tasks/{id}/seal-package` response's `sortLane` field, which
+is where anything needing it reads it today — there is no in-process
+consumer of `PackageSealed`/`LabelApplied` that needs the value on the
+event payload. This is a WES-tier decision only: no WCS
+device/conveyor/lane-controller integration exists in this repository, so
+there is not yet a concrete external consumer whose needs would even
+justify a payload change, the same honest gap already accepted for
+`fragileHandling`.

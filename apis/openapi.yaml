@@ -430,6 +430,7 @@ paths:
                 status: SEALED
                 scannedContents: [sku-1, sku-2]
                 fragileHandling: false
+                sortLane: STANDARD
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -446,9 +447,17 @@ paths:
                 instance: /tasks/20260101T120100.000000000/seal-package
         "409":
           description: >
-            `stationId` does not hold the active claim on this task (either
-            it was never claimed by this station, or the claim/lease is no
-            longer active).
+            Either `stationId` does not hold the active claim on this task
+            (it was never claimed by this station, or the claim/lease is no
+            longer active — `task-not-owner`), or a scanned item's live DOT
+            hazard classification lookup found it incompatible — per the
+            class-level 49 CFR §177.848-derived segregation matrix — with an
+            item already scanned into this same package
+            (`package-segregation-violation`, see
+            [ADR-0010](/docs/adr/0010-package-segregation-and-sort-lane)).
+            The segregation check only runs when the deployment has
+            `PRODUCT_CLASSIFICATION_MODE=http` configured; the default
+            permissive mode never rejects on this basis.
           content:
             application/problem+json:
               schema:
@@ -688,6 +697,20 @@ components:
       enum: [OPEN, SEALED, LABELED, DIVERTED]
       example: SEALED
 
+    SortLane:
+      type: string
+      description: >
+        Package's derived WES-tier sortation routing decision (see
+        [ADR-0010](/docs/adr/0010-package-segregation-and-sort-lane)):
+        `HAZMAT_LANE` if any scanned item carried a DOT hazard class from
+        the live per-scanned-item classification lookup, else
+        `FRAGILE_NO_TILT` if `fragileHandling` is true, else `STANDARD`.
+        A decision only — no WCS device/conveyor integration exists in
+        this service; a real WCS system would consume this value as its
+        own inbound fact.
+      enum: [HAZMAT_LANE, FRAGILE_NO_TILT, STANDARD]
+      example: STANDARD
+
     CreateTaskRequest:
       type: object
       required: [type, cpt, orderRef, requiredCapabilities]
@@ -855,6 +878,8 @@ components:
             of the package's scanned/sealed contents came from an order
             line classified Fragile upstream.
           example: false
+        sortLane:
+          $ref: "#/components/schemas/SortLane"
 
     RunSlamRequest:
       type: object

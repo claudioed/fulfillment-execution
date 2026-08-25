@@ -8,6 +8,7 @@ import (
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
@@ -835,6 +836,146 @@ func TestSealPackage_PropagatesPublishError(t *testing.T) {
 	_, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
 	if !errors.Is(err, errFake) {
 		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
+// --- ClassificationLookup: live per-scanned-item DOT hazard segregation (ADR-0010) ---
+
+// A SealPackage built with no ClassificationLookup (as every test above
+// does) must behave exactly as before this feature — permissive by
+// construction, no segregation check ever runs.
+func TestSealPackage_NilClassificationLookup_BehavesLikeBeforeThisFeature(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1", "sku-2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := p.SortLane(); got != pack.SortLaneStandard {
+		t.Fatalf("expected STANDARD sort lane with no classification lookup wired, got %s", got)
+	}
+}
+
+// Two hazmat-classified items whose DOT hazard classes ARE compatible per
+// the segregation matrix must both seal successfully into one package and
+// drive SortLane() to HAZMAT_LANE.
+func TestSealPackage_HazmatClassifiedItemsCompatible_Pass(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	lookup := newFakeClassificationLookup()
+	lookup.bySKU["sku-class-3"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 3}
+	lookup.bySKU["sku-class-9"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 9}
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }, ClassificationLookup: lookup}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-class-3", "sku-class-9"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := p.SortLane(); got != pack.SortLaneHazmat {
+		t.Fatalf("expected HAZMAT_LANE, got %s", got)
+	}
+	if len(p.ScannedHazardClasses()) != 2 {
+		t.Fatalf("expected both hazard classes recorded, got %v", p.ScannedHazardClasses())
+	}
+}
+
+// Two hazmat-classified items whose DOT hazard classes are INCOMPATIBLE
+// must reject the whole seal with ErrPackageSegregationViolation, and the
+// package must not be persisted.
+func TestSealPackage_HazmatClassifiedItemsIncompatible_Reject(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	lookup := newFakeClassificationLookup()
+	lookup.bySKU["sku-class-1"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 1}
+	lookup.bySKU["sku-class-3"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 3}
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }, ClassificationLookup: lookup}
+	_, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-class-1", "sku-class-3"})
+	if !errors.Is(err, pack.ErrPackageSegregationViolation) {
+		t.Fatalf("expected ErrPackageSegregationViolation, got %v", err)
+	}
+
+	got, _ := h.packages.FindById(ctx, "p1")
+	if got != nil {
+		t.Fatalf("expected the package to NOT be persisted after a segregation violation, got %+v", got)
+	}
+}
+
+// A SKU the lookup reports Known=false (or plain unregistered) never
+// triggers or blocks segregation — fail-open, and the item seals normally.
+func TestSealPackage_UnclassifiedItems_FailOpen(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	lookup := newFakeClassificationLookup()
+	lookup.bySKU["sku-class-1"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 1}
+	// sku-unclassified is never registered in lookup.bySKU -> Known: false.
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }, ClassificationLookup: lookup}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-class-1", "sku-unclassified"})
+	if err != nil {
+		t.Fatalf("expected the unclassified item to fail open (no rejection), got %v", err)
+	}
+	if len(p.ScannedContents()) != 2 {
+		t.Fatalf("expected both items scanned, got %v", p.ScannedContents())
+	}
+	if len(p.ScannedHazardClasses()) != 1 {
+		t.Fatalf("expected only the classified item's hazard class recorded, got %v", p.ScannedHazardClasses())
+	}
+}
+
+// A single SKU's lookup transport error fails open for that SKU only — the
+// rest of the seal proceeds normally rather than aborting the whole call.
+func TestSealPackage_SingleSKULookupTransportError_FailsOpenForThatItemOnly(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	lookup := newFakeClassificationLookup()
+	lookup.bySKU["sku-class-3"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 3}
+	lookup.failFor["sku-flaky"] = true
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }, ClassificationLookup: lookup}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-class-3", "sku-flaky"})
+	if err != nil {
+		t.Fatalf("expected the whole seal to succeed despite one SKU's lookup error, got %v", err)
+	}
+	if len(p.ScannedContents()) != 2 {
+		t.Fatalf("expected both items scanned despite the lookup error, got %v", p.ScannedContents())
+	}
+	if len(p.ScannedHazardClasses()) != 1 {
+		t.Fatalf("expected only the successfully-classified item's hazard class recorded, got %v", p.ScannedHazardClasses())
+	}
+	if len(lookup.calls) != 2 {
+		t.Fatalf("expected both SKUs to be looked up, got %v", lookup.calls)
 	}
 }
 
