@@ -37,3 +37,9 @@ func NewReadOnlyPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, er
 	cfg.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
+
+// RecordPoolStats registers observable gauges for pool's connection counts on
+// the global MeterProvider, mirroring the OLTP postgres.RecordPoolStats.
+func RecordPoolStats(pool *pgxpool.Pool) error {
+	return otelpgx.RecordStats(pool)
+}
