@@ -1,3 +1,10 @@
 bin/
+
+# Built Go binaries (module name & cmd binaries) must never be committed —
+# `go build` in the repo root drops these; they are build artifacts.
+/fulfillment-execution
+/fulfillment-projector
+/fulfillment-reports
+/mcp
 .env
 coverage.out
