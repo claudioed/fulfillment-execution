@@ -38,9 +38,12 @@ type analyticsEnvelope struct {
 }
 
 // analyticsData is the union of fields the projecting event payloads carry.
-// Each event_type populates the subset it needs.
+// Each event_type populates the subset it needs. TaskType is enriched onto
+// task-scoped events by the publisher (via a TaskRepo lookup) since the domain
+// events do not carry it.
 type analyticsData struct {
 	TaskId    string `json:"task_id"`
+	TaskType  string `json:"task_type"`
 	StationId string `json:"station_id"`
 	PackageId string `json:"package_id"`
 }
@@ -152,15 +155,13 @@ func (c *AnalyticsConsumer) HandleMessage(ctx context.Context, raw []byte) error
 		return fmt.Errorf("analytics: decode data: %w", err)
 	}
 
-	taskType := taskTypeOf(data.TaskId)
-
 	switch env.EventType {
 	case "TaskClaimed":
-		return c.Projection.ApplyTaskClaimed(ctx, env.EventId, data.TaskId, taskType, data.StationId, env.OccurredAt)
+		return c.Projection.ApplyTaskClaimed(ctx, env.EventId, data.TaskId, data.TaskType, data.StationId, env.OccurredAt)
 	case "TaskCompleted":
-		return c.Projection.ApplyTaskCompleted(ctx, env.EventId, data.TaskId, taskType, data.StationId, env.OccurredAt)
+		return c.Projection.ApplyTaskCompleted(ctx, env.EventId, data.TaskId, data.TaskType, data.StationId, env.OccurredAt)
 	case "LeaseExpired":
-		return c.Projection.ApplyLeaseExpired(ctx, env.EventId, data.TaskId, taskType, data.StationId, env.OccurredAt)
+		return c.Projection.ApplyLeaseExpired(ctx, env.EventId, data.TaskId, data.TaskType, data.StationId, env.OccurredAt)
 	case "WeightDiscrepancyDetected":
 		return c.Projection.ApplyWeightDiscrepancy(ctx, env.EventId, taskTypeSlam, data.StationId, env.OccurredAt)
 	default:
@@ -170,12 +171,3 @@ func (c *AnalyticsConsumer) HandleMessage(ctx context.Context, raw []byte) error
 
 // taskTypeSlam is the process path a weigh-check divert belongs to: SLAM.
 const taskTypeSlam = "SLAM"
-
-// taskTypeOf derives the process-path label for a task-scoped event. The
-// analytics payload does not carry the task type, so it is not knowable from
-// the event alone; this returns the empty string, which the read model treats
-// as an unspecified process path. Kept as a single seam so a future envelope
-// that DOES carry task_type only needs changing here.
-func taskTypeOf(_ string) string {
-	return ""
-}

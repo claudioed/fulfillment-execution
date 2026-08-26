@@ -10,6 +10,7 @@ import (
 
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
 // fakeAnalyticsWriter captures the messages handed to WriteMessages so a test
@@ -21,6 +22,30 @@ type fakeAnalyticsWriter struct {
 func (w *fakeAnalyticsWriter) WriteMessages(_ context.Context, msgs ...kafkago.Message) error {
 	w.msgs = append(w.msgs, msgs...)
 	return nil
+}
+
+// fakeTaskRepo is a minimal ports.TaskRepo whose FindById returns a task of a
+// fixed type, so the publisher's task_type enrichment can be asserted without
+// a real repository. Only FindById is used by the publisher; the rest satisfy
+// the interface.
+type fakeTaskRepo struct {
+	taskType task.Type
+	found    bool
+}
+
+func (r fakeTaskRepo) FindById(_ context.Context, id shared.TaskId) (*task.Task, error) {
+	if !r.found {
+		return nil, nil
+	}
+	return task.New(id, r.taskType, shared.NewCPT(time.Now()), "order-1", shared.NewCapabilitySet(), false, false), nil
+}
+func (fakeTaskRepo) Save(context.Context, *task.Task) error { return nil }
+func (fakeTaskRepo) FindClaimableByType(context.Context, task.Type, time.Time) ([]*task.Task, error) {
+	return nil, nil
+}
+func (fakeTaskRepo) FindAllClaimed(context.Context) ([]*task.Task, error) { return nil, nil }
+func (fakeTaskRepo) CountByTypeAndStatus(context.Context, task.Type, task.Status) (int, error) {
+	return 0, nil
 }
 
 func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
@@ -111,7 +136,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			w := &fakeAnalyticsWriter{}
-			p := outboundkafka.NewAnalyticsPublisher(nil, func() string { return "evt-fixed" })
+			p := outboundkafka.NewAnalyticsPublisher(nil, fakeTaskRepo{found: false}, func() string { return "evt-fixed" })
 			p.Writer = w
 
 			if err := p.Publish(context.Background(), tt.event); err != nil {
@@ -158,7 +183,7 @@ func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 
 func TestAnalyticsPublisher_SkipsUnknownEvents(t *testing.T) {
 	w := &fakeAnalyticsWriter{}
-	p := outboundkafka.NewAnalyticsPublisher(nil, func() string { return "evt" })
+	p := outboundkafka.NewAnalyticsPublisher(nil, fakeTaskRepo{found: false}, func() string { return "evt" })
 	p.Writer = w
 
 	if err := p.Publish(context.Background(), unknownEvent{}); err != nil {
@@ -176,7 +201,7 @@ func (unknownEvent) OccurredAt() time.Time { return time.Time{} }
 
 func TestAnalyticsPublisher_WeightDiscrepancyExpectedActual(t *testing.T) {
 	w := &fakeAnalyticsWriter{}
-	p := outboundkafka.NewAnalyticsPublisher(nil, func() string { return "evt" })
+	p := outboundkafka.NewAnalyticsPublisher(nil, fakeTaskRepo{found: false}, func() string { return "evt" })
 	p.Writer = w
 
 	at := time.Now()
@@ -196,5 +221,32 @@ func TestAnalyticsPublisher_WeightDiscrepancyExpectedActual(t *testing.T) {
 	}
 	if data["package_id"] != "pkg" {
 		t.Errorf("package_id = %v, want pkg", data["package_id"])
+	}
+}
+
+// TestAnalyticsPublisher_EnrichesTaskType asserts a task-scoped event is
+// stamped with the owning task's process path, looked up via the TaskRepo —
+// the enrichment that populates the report's task_type dimension.
+func TestAnalyticsPublisher_EnrichesTaskType(t *testing.T) {
+	w := &fakeAnalyticsWriter{}
+	p := outboundkafka.NewAnalyticsPublisher(nil, fakeTaskRepo{taskType: task.Pack, found: true}, func() string { return "evt" })
+	p.Writer = w
+
+	if err := p.Publish(context.Background(), shared.NewTaskCompleted("t1", "s1", time.Now())); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	var env outboundkafka.AnalyticsEnvelope
+	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if data["task_type"] != string(task.Pack) {
+		t.Errorf("task_type = %v, want %v", data["task_type"], task.Pack)
+	}
+	if data["station_id"] != "s1" {
+		t.Errorf("station_id = %v, want s1", data["station_id"])
 	}
 }

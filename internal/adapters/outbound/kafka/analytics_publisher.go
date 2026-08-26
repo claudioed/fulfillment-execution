@@ -44,14 +44,22 @@ type AnalyticsEnvelope struct {
 // AnalyticsTopic as an AnalyticsEnvelope. It satisfies ports.EventPublisher
 // and is a SEPARATE adapter from Publisher: the integration publisher
 // (publisher.go) forwards only TaskCompleted and is left untouched.
+//
+// Task-scoped events are enriched with the owning task's process path
+// (task_type) via a TaskRepo lookup — the same repo-lookup-enrichment pattern
+// Publisher uses for OrderRef — because the domain events themselves stay thin
+// and do not carry the task type (see ADR-0012). The report is keyed by
+// task_type, so this enrichment is what populates that dimension.
 type AnalyticsPublisher struct {
 	Writer Writer
+	Tasks  ports.TaskRepo
 	NewId  func() string
 }
 
 // NewAnalyticsPublisher constructs an AnalyticsPublisher writing to
-// AnalyticsTopic on brokers. newId mints the envelope event_id.
-func NewAnalyticsPublisher(brokers []string, newId func() string) *AnalyticsPublisher {
+// AnalyticsTopic on brokers. newId mints the envelope event_id; tasks is used
+// to enrich task-scoped events with their process path.
+func NewAnalyticsPublisher(brokers []string, tasks ports.TaskRepo, newId func() string) *AnalyticsPublisher {
 	return &AnalyticsPublisher{
 		Writer: &kafkago.Writer{
 			Addr:                   kafkago.TCP(brokers...),
@@ -59,6 +67,7 @@ func NewAnalyticsPublisher(brokers []string, newId func() string) *AnalyticsPubl
 			Balancer:               &kafkago.LeastBytes{},
 			AllowAutoTopicCreation: true,
 		},
+		Tasks: tasks,
 		NewId: newId,
 	}
 }
@@ -68,7 +77,7 @@ func NewAnalyticsPublisher(brokers []string, newId func() string) *AnalyticsPubl
 // so the caller can hand it the full event stream indiscriminately.
 func (p *AnalyticsPublisher) Publish(ctx context.Context, evts ...shared.DomainEvent) error {
 	for _, e := range evts {
-		eventType, key, data, ok := marshalData(e)
+		eventType, key, data, ok := p.marshalData(ctx, e)
 		if !ok {
 			continue
 		}
@@ -91,32 +100,53 @@ func (p *AnalyticsPublisher) Publish(ctx context.Context, evts ...shared.DomainE
 	return nil
 }
 
+// taskType looks up the process path of the task with id, returning "" when
+// the task cannot be found (a best-effort enrichment: a missing task_type
+// leaves the report's process-path dimension unspecified rather than failing
+// the publish).
+func (p *AnalyticsPublisher) taskType(ctx context.Context, id shared.TaskId) string {
+	if p.Tasks == nil {
+		return ""
+	}
+	t, err := p.Tasks.FindById(ctx, id)
+	if err != nil || t == nil {
+		return ""
+	}
+	return string(t.Type())
+}
+
 // marshalData maps a domain event to its analytics event_type, aggregate-id
 // message key, and snake_case JSON payload. The bool return is false for an
 // event type outside the analytics contract, so Publish can skip it.
-func marshalData(e shared.DomainEvent) (eventType, key string, data json.RawMessage, ok bool) {
+// Task-scoped events are enriched with task_type via a TaskRepo lookup.
+func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEvent) (eventType, key string, data json.RawMessage, ok bool) {
 	switch ev := e.(type) {
 	case shared.TaskCreated:
 		return "TaskCreated", string(ev.TaskId), mustMarshal(map[string]any{
-			"task_id": string(ev.TaskId),
+			"task_id":   string(ev.TaskId),
+			"task_type": p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.TaskClaimed:
 		return "TaskClaimed", string(ev.TaskId), mustMarshal(map[string]any{
 			"task_id":    string(ev.TaskId),
+			"task_type":  p.taskType(ctx, ev.TaskId),
 			"station_id": string(ev.StationId),
 		}), true
 	case shared.LeaseExpired:
 		return "LeaseExpired", string(ev.TaskId), mustMarshal(map[string]any{
-			"task_id": string(ev.TaskId),
+			"task_id":   string(ev.TaskId),
+			"task_type": p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.TaskCompleted:
 		return "TaskCompleted", string(ev.TaskId), mustMarshal(map[string]any{
 			"task_id":    string(ev.TaskId),
+			"task_type":  p.taskType(ctx, ev.TaskId),
 			"station_id": string(ev.StationId),
 		}), true
 	case shared.ItemPicked:
 		return "ItemPicked", string(ev.TaskId), mustMarshal(map[string]any{
-			"task_id": string(ev.TaskId),
+			"task_id":   string(ev.TaskId),
+			"task_type": p.taskType(ctx, ev.TaskId),
 		}), true
 	case shared.PackageSealed:
 		return "PackageSealed", string(ev.PackageId), mustMarshal(map[string]any{
