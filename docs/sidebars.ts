@@ -65,6 +65,12 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Analytics',
+      collapsed: false,
+      items: ['analytics/throughput-report'],
+    },
+    {
+      type: 'category',
       label: 'AI Ecosystem (MCP)',
       collapsed: false,
       items: ['mcp/governance-charter'],
