@@ -91,6 +91,14 @@ func run() error {
 		Tasks:         taskRepo,
 		Now:           time.Now,
 	}
+	// The curated throughput data-product tool talks to the reports REST
+	// service (never the analytical DB directly). It is exposed only when
+	// REPORTS_BASE_URL is set, so an MCP deployment without the reports
+	// service simply omits the tool.
+	if base := os.Getenv("REPORTS_BASE_URL"); base != "" {
+		logger.Info("fulfillment reports tool enabled", "reports_base_url", base)
+		deps.Reports = inboundmcp.NewReportsRESTClient(base, nil)
+	}
 	server := inboundmcp.NewServer(deps)
 
 	auth := inboundmcp.NewStaticKeyAuth(authKeys(logger))

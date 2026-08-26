@@ -31,6 +31,10 @@ type Deps struct {
 	CompleteTask *usecases.CompleteTask
 	// Tasks is the read-only query port for richer diagnostics.
 	Tasks TaskQueries
+	// Reports is the client of the fulfillment-reports REST service, backing
+	// the curated get_fulfillment_throughput_report tool. When nil, that tool
+	// is not registered (an MCP deployment without the reports service).
+	Reports ReportsClient
 	// Now supplies the current time; injected so lease diagnostics are
 	// deterministic under test. Defaults to time.Now when nil.
 	Now func() time.Time
@@ -208,6 +212,10 @@ func (d Deps) registerTools(server *mcp.Server, scopeOf func(context.Context) Sc
 		Description: "Complete a claimed task on behalf of the station that holds its active claim. Rejected if the task is not found, not claimed, already completed, or the station does not own the claim.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: notIdempotent},
 	}, d.completeTask)
+
+	// Curated read-only data-product tool, registered only when the reports
+	// client is configured.
+	d.registerReportTool(server, scopeOf)
 }
 
 // addTool registers one scope-gated tool. It centralises the cross-cutting
