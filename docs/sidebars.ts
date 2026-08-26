@@ -86,6 +86,7 @@ const sidebars: SidebarsConfig = {
         'adr/0009-fragile-and-hazmat-handling-flags',
         'adr/0010-package-segregation-and-sort-lane',
         'adr/0011-gift-wrap-handling-flag',
+        'adr/0012-analytical-data-product',
       ],
     },
   ],
