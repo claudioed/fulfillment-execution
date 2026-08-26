@@ -17,22 +17,31 @@ nothing; application depends on domain; adapters depend on application/domain.**
 No framework or SQL types in the domain layer.
 
 ```
-cmd/execution/               main.go — composition root
+cmd/execution/               main.go — OLTP composition root
+cmd/fulfillment-projector/   analytics WRITER: analytics topic -> analytical DB
+cmd/fulfillment-reports/     analytics READ-ONLY READER: serves GET /reports/...
+cmd/mcp/                     MCP server (adds the report tool)
 internal/
   domain/
     task/                    Task aggregate (Pick|Pack|SLAM lifecycle, lease)
     station/                 Station aggregate (occupant, capabilities)
     package/                 Package aggregate (pack -> sealed; SLAM weigh-check)
     shared/                  value objects: TaskId, StationId, CPT, Capability, events
+  analytics/report/          analytical read model + store ports (ADR-0012)
   application/
     ports/                   OUT: TaskRepo, StationRepo, PackageRepo, EventPublisher, Clock
     usecases/                one struct per use case
   adapters/
-    inbound/http/            chi handlers, DTOs, error mapping
+    inbound/http/            chi handlers, DTOs, error mapping (OLTP + reports)
+    inbound/kafka/           WorkReleased consumer + analytics projector consumer
+    inbound/mcp/             MCP tools (incl. get_fulfillment_throughput_report)
     outbound/postgres/       pgxpool repos + migrations
+    outbound/analyticsstore/ analytical DB writer + read-only reader
     outbound/memory/         in-memory repos for tests/local
-    outbound/events/         log/buffered publisher (kafka-ready iface)
+    outbound/kafka/          integration publisher + analytics publisher
+    outbound/events/         log/buffered/multi publisher
 migrations/                  golang-migrate SQL files
+migrations/analytics/        analytical schema migrations
 ```
 
 ## Ubiquitous Language (use these exact names)
@@ -119,6 +128,28 @@ WeightDiscrepancyDetected, LabelApplied, PackageDiverted.
 - GET  /healthz
 
 JSON DTOs live in the http adapter; never leak domain structs.
+
+## Analytics data product (ADR-0012)
+
+Additive read side built from this service's OWN domain events. The OLTP
+domain/application layers are NOT modified and must NOT import the analytics
+store (arch-test enforces). `internal/analytics/report/` depends on nothing.
+
+- Events are fanned to a SEPARATE topic `warehouse.fulfillment.analytics` by a
+  NEW outbound adapter (`outbound/kafka/analytics_publisher.go`). The
+  integration topic `warehouse.fulfillment.events` and its publisher are
+  untouched. Task-scoped events are enriched with `task_type` via a TaskRepo
+  lookup (domain events stay thin).
+- SEPARATE analytical Postgres (`ANALYTICS_DATABASE_URL`), own migrations
+  (`migrations/analytics/`), read-only role for the reader.
+- Three processes: `cmd/execution` (OLTP), `cmd/fulfillment-projector` (the ONLY
+  writer of the analytical DB; consumes the analytics topic from FirstOffset,
+  idempotent on event_id), `cmd/fulfillment-reports` (read-only reader).
+- Report: Throughput & Lease-Health, keyed task-type × station × hour.
+  - GET /reports/throughput?from&to&taskType&stationId&granularity  (reports binary)
+  - GET /reports/throughput/freshness                               (lag vs real time)
+  - MCP tool `get_fulfillment_throughput_report` (calls the reports REST; never
+    opens the analytical DB directly).
 
 ## Tech & standards
 
