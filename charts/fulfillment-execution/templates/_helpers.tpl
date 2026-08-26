@@ -48,3 +48,19 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- include "fulfillment-execution.fullname" . }}-database
 {{- end }}
 {{- end }}
+
+{{- define "fulfillment-execution.analyticsSecretName" -}}
+{{- if .Values.analytics.database.existingSecret }}
+{{- .Values.analytics.database.existingSecret }}
+{{- else }}
+{{- include "fulfillment-execution.fullname" . }}-analytics-database
+{{- end }}
+{{- end }}
+
+{{- define "fulfillment-execution.projectorFullname" -}}
+{{- printf "%s-projector" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "fulfillment-execution.reportsFullname" -}}
+{{- printf "%s-reports" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}

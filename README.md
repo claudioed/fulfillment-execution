@@ -36,22 +36,31 @@ on nothing; application depends on domain; adapters depend on
 application/domain.**
 
 ```
-cmd/execution/               main.go — composition root
+cmd/execution/               main.go — OLTP composition root
+cmd/fulfillment-projector/   analytics WRITER: analytics topic -> analytical DB
+cmd/fulfillment-reports/     analytics READ-ONLY READER: serves GET /reports/...
+cmd/mcp/                      MCP server (adds the report tool)
 internal/
   domain/
     task/                    Task aggregate (Pick|Pack|SLAM lifecycle, lease)
     station/                 Station aggregate (occupant, capabilities)
     package/                 Package aggregate (pack -> sealed; SLAM weigh-check)
     shared/                  value objects: TaskId, StationId, CPT, Capability, events
+  analytics/report/          analytical read model + store ports (ADR-0012)
   application/
     ports/                   OUT: TaskRepo, StationRepo, PackageRepo, EventPublisher, Clock
     usecases/                one struct per use case
   adapters/
-    inbound/http/            chi handlers, DTOs, error mapping
+    inbound/http/            chi handlers, DTOs, error mapping (OLTP + reports)
+    inbound/kafka/           WorkReleased consumer + analytics projector consumer
+    inbound/mcp/             MCP tools (incl. get_fulfillment_throughput_report)
     outbound/postgres/       pgxpool repos + migrations
+    outbound/analyticsstore/ analytical DB writer + read-only reader
     outbound/memory/         in-memory repos for tests/local
-    outbound/events/         log/buffered publisher (kafka-ready iface)
+    outbound/kafka/          integration publisher + analytics publisher
+    outbound/events/         log/buffered/multi publisher
 migrations/                  golang-migrate SQL files
+migrations/analytics/        analytical schema migrations
 ```
 
 `internal/domain/package` is a Go package named `pack` (not `package`, which
@@ -84,6 +93,35 @@ with the `golang-migrate` CLI instead:
 migrate -path migrations -database "$DATABASE_URL" up
 ```
 
+### Analytics data product (report)
+
+The analytical **report** is a separate read side built from this service's own
+domain events (see [ADR-0012](docs/docs/adr/0012-analytical-data-product.md)).
+It runs as **two extra processes** against a **separate analytical database**,
+fed by a dedicated Kafka topic `warehouse.fulfillment.analytics`:
+
+```sh
+# 0. OLTP service publishing to Kafka (integration + analytics topics)
+export KAFKA_BROKERS=localhost:9092
+EVENT_PUBLISHER=kafka DATABASE_URL="$DATABASE_URL" go run ./cmd/execution
+
+# 1. projector (WRITER): consumes the analytics topic -> analytical DB.
+#    Runs the analytical migrations (migrations/analytics) on start.
+export ANALYTICS_DATABASE_URL="postgres://fx_analytics:***@localhost:5432/fulfillment_analytics?sslmode=disable"
+go run ./cmd/fulfillment-projector           # /healthz on :8091 (ADMIN_ADDR)
+
+# 2. reports (READ-ONLY READER): serves GET /reports/... from the analytical DB.
+#    Point it at a read-only-role DSN in anything shared.
+ANALYTICS_DATABASE_URL="$ANALYTICS_DATABASE_URL" HTTP_ADDR=:8092 go run ./cmd/fulfillment-reports
+
+# query the report
+curl "localhost:8092/reports/throughput?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z"
+curl "localhost:8092/reports/throughput/freshness"
+```
+
+The projector is the **only** writer of the analytical DB; the reports binary
+connects read-only. The OLTP `cmd/execution` never opens the analytical DB.
+
 ### Configuration
 
 | Env var        | Default | Purpose                          |
@@ -91,7 +129,10 @@ migrate -path migrations -database "$DATABASE_URL" up
 | `HTTP_ADDR`    | `:8080` | HTTP listen address               |
 | `DATABASE_URL` | (unset) | Postgres DSN; unset selects memory adapters |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list, used by both the `WorkReleased` consumer and the `TaskCompleted` publisher |
-| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` |
+| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` AND fans every domain event to `warehouse.fulfillment.analytics` (feeds the report) |
+| `ANALYTICS_DATABASE_URL` | (unset) | Analytical DB DSN, read by `cmd/fulfillment-projector` (read-write) and `cmd/fulfillment-reports` (read-only role). MUST be a different database from `DATABASE_URL` |
+| `ANALYTICS_MIGRATIONS_PATH` | `migrations/analytics` | Analytical golang-migrate migrations the projector runs on start |
+| `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
 | `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTel Collector's OTLP/gRPC address (see [Observability](#observability)) |
 | `OTEL_SERVICE_NAME` | `fulfillment-execution` | `service.name` resource attribute |

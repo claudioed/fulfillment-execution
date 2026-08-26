@@ -65,6 +65,12 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Analytics',
+      collapsed: false,
+      items: ['analytics/throughput-report'],
+    },
+    {
+      type: 'category',
       label: 'AI Ecosystem (MCP)',
       collapsed: false,
       items: ['mcp/governance-charter'],
@@ -86,6 +92,7 @@ const sidebars: SidebarsConfig = {
         'adr/0009-fragile-and-hazmat-handling-flags',
         'adr/0010-package-segregation-and-sort-lane',
         'adr/0011-gift-wrap-handling-flag',
+        'adr/0012-analytical-data-product',
       ],
     },
   ],

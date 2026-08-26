@@ -113,11 +113,16 @@ func run() error {
 	var (
 		publisher      ports.EventPublisher
 		kafkaPublisher *outboundkafka.Publisher
+		analyticsPub   *outboundkafka.AnalyticsPublisher
 	)
 	if getenv("EVENT_PUBLISHER", "log") == "kafka" {
-		logger.Info("event publisher configured", "publisher", "kafka", "topic", outboundkafka.Topic, "brokers", kafkaBrokers)
+		logger.Info("event publisher configured", "publisher", "kafka", "topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", kafkaBrokers)
 		kafkaPublisher = outboundkafka.NewPublisher(kafkaBrokers, taskRepo, uuidLike)
-		publisher = kafkaPublisher
+		analyticsPub = outboundkafka.NewAnalyticsPublisher(kafkaBrokers, taskRepo, uuidLike)
+		// Fan every domain event to BOTH the integration topic and the
+		// dedicated analytics topic (ADR-0012). The analytics stream feeds
+		// the projector; the integration stream is unchanged.
+		publisher = events.NewMultiPublisher(kafkaPublisher, analyticsPub)
 	} else {
 		publisher = events.NewLogPublisher(logger)
 	}
@@ -145,6 +150,9 @@ func run() error {
 	defer func() { _ = consumer.Close() }()
 	if kafkaPublisher != nil {
 		defer func() { _ = kafkaPublisher.Close() }()
+	}
+	if analyticsPub != nil {
+		defer func() { _ = analyticsPub.Close() }()
 	}
 
 	go func() {
