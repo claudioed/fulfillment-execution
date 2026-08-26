@@ -17,6 +17,16 @@ CREATE TABLE analytics_processed_events (
 CREATE INDEX idx_analytics_processed_events_occurred_at
     ON analytics_processed_events (occurred_at DESC);
 
+-- Consumer-level dedupe set, used by the inbound consumer's
+-- ports.ProcessedEvents gate. It is kept SEPARATE from
+-- analytics_processed_events (which the projection UPSERT claims) so the two
+-- idempotency layers do not race to claim the same event_id: the consumer
+-- gate admits the event, the projection then records its effect.
+CREATE TABLE analytics_consumed_events (
+    event_id     TEXT PRIMARY KEY,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Pending claims: the claim time of a task not yet completed, so a later
 -- TaskCompleted can derive claim-to-complete seconds. Keyed by the natural
 -- identity of a claim (task_type, station_id, task_id).
