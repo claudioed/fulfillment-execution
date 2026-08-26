@@ -68,6 +68,15 @@ func NewAnalyticsConsumer(brokers []string, topic string, projection report.Proj
 		Brokers: brokers,
 		Topic:   topic,
 		GroupID: AnalyticsConsumerGroup,
+		// Start a brand-new consumer group at the EARLIEST offset. The
+		// analytics projection must see the full history of the topic (it is a
+		// replayable read model, not a live integration reaction), so a fresh
+		// projector — or a backfill into a new group — reads from the
+		// beginning rather than kafka-go's default of the latest offset, which
+		// would silently drop every event produced before the group first
+		// committed an offset. Once the group has committed offsets, those
+		// take precedence and this only affects the first join.
+		StartOffset: kafkago.FirstOffset,
 	})
 	return &AnalyticsConsumer{Reader: reader, Projection: projection, Processed: processed, Logger: logger}
 }

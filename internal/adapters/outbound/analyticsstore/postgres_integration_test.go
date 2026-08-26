@@ -120,3 +120,31 @@ func TestReadOnlyPool_RejectsWrites(t *testing.T) {
 		t.Fatalf("FreshnessLag over read-only pool: %v", err)
 	}
 }
+
+// TestFreshnessLag_EmptyStore covers the NULL path: max(occurred_at) over an
+// empty table returns a single NULL row (not zero rows), which must be read as
+// a zero lag rather than a scan error.
+func TestFreshnessLag_EmptyStore(t *testing.T) {
+	url := requireAnalyticsURL(t)
+	migrateAnalytics(t, url)
+
+	pool, err := analyticsstore.NewPool(context.Background(), url)
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	ctx := context.Background()
+	// Ensure the processed-events table is empty so max() yields NULL.
+	if _, err := pool.Exec(ctx, `TRUNCATE analytics_processed_events`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+
+	lag, err := analyticsstore.NewPostgresReport(pool).FreshnessLag(ctx)
+	if err != nil {
+		t.Fatalf("FreshnessLag on empty store: %v", err)
+	}
+	if lag != 0 {
+		t.Fatalf("empty-store lag = %v, want 0", lag)
+	}
+}

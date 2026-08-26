@@ -74,7 +74,9 @@ func (r *PostgresReport) Query(ctx context.Context, q report.ReportQuery) (repor
 // how far the read model trails real time. Zero when the read model is empty
 // or (defensively) when the latest event is future-dated.
 func (r *PostgresReport) FreshnessLag(ctx context.Context) (time.Duration, error) {
-	var latest time.Time
+	// max() over an empty table returns a single NULL row (not zero rows), so
+	// scan into a nullable *time.Time and treat NULL as "read model empty".
+	var latest *time.Time
 	err := r.pool.QueryRow(ctx,
 		`SELECT max(occurred_at) FROM analytics_processed_events`).Scan(&latest)
 	switch {
@@ -83,10 +85,10 @@ func (r *PostgresReport) FreshnessLag(ctx context.Context) (time.Duration, error
 	case err != nil:
 		return 0, fmt.Errorf("analyticsstore: freshness query: %w", err)
 	}
-	if latest.IsZero() {
+	if latest == nil || latest.IsZero() {
 		return 0, nil
 	}
-	lag := time.Since(latest)
+	lag := time.Since(*latest)
 	if lag < 0 {
 		return 0, nil
 	}
