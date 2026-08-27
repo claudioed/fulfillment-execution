@@ -144,7 +144,7 @@ func run() error {
 	}
 	router := inboundhttp.NewRouter(handlers, logger)
 
-	srv := &http.Server{Addr: httpAddr, Handler: router}
+	srv := &http.Server{Addr: httpAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 
 	consumer := inboundkafka.NewConsumer(kafkaBrokers, workReleasedTopic, createTask, processedEvents, logger)
 	defer func() { _ = consumer.Close() }()

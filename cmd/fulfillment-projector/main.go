@@ -90,7 +90,7 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
-	srv := &http.Server{Addr: adminAddr, Handler: mux}
+	srv := &http.Server{Addr: adminAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
 		logger.Info("projector admin server listening", "addr", adminAddr)
