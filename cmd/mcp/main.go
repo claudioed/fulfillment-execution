@@ -104,7 +104,7 @@ func run() error {
 	auth := inboundmcp.NewStaticKeyAuth(authKeys(logger))
 	handler := inboundmcp.Handler(server, auth)
 
-	srv := &http.Server{Addr: httpAddr, Handler: handler}
+	srv := &http.Server{Addr: httpAddr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
 	go func() {
 		logger.Info("mcp server listening (Streamable HTTP)", "addr", httpAddr)
