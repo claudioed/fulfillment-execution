@@ -1,0 +1,2 @@
+ALTER TABLE tasks ADD COLUMN gift_wrap BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE packages ADD COLUMN gift_wrap_requested BOOLEAN NOT NULL DEFAULT false;

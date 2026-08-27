@@ -14,11 +14,16 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
+	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
 // Envelope is the CloudEvents-like wrapper shared across all four
@@ -37,6 +42,21 @@ type WorkReleasedData struct {
 	WorkUnitId string    `json:"work_unit_id"`
 	CPT        time.Time `json:"cpt"`
 	Ref        string    `json:"ref"`
+	// Fragile is an optional packing hint set by wes-work-planning at
+	// release time, sourced from inventory-storage's ProductClassification
+	// (true if the upstream order line was classified Fragile). It is
+	// omitted, not required: any already-documented producer that predates
+	// this field simply does not send it, and it defaults to false — a
+	// known simplification for this round, matching the existing path_id
+	// prefix convention (see README's Integration section).
+	Fragile bool `json:"fragile"`
+	// GiftWrap is an optional packing hint set by wes-work-planning at
+	// work-enqueue time — a caller-stated request that this order's
+	// package be gift-wrapped, not a product classification. It is
+	// omitted, not required, and never published as explicit false: any
+	// producer that does not carry a gift-wrap request for the order
+	// simply omits the field, and it defaults to false (see ADR-0011).
+	GiftWrap bool `json:"gift_wrap"`
 }
 
 // Consumer reads WorkReleased events off warehouse.work-planning.events and
@@ -75,8 +95,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 			}
 			return err
 		}
-		if err := c.HandleMessage(ctx, msg.Value); err != nil {
-			c.Logger.Error("kafka message handling failed", "error", err)
+		if err := c.Handle(ctx, msg); err != nil {
+			c.Logger.ErrorContext(ctx, "kafka message handling failed", "error", err)
 		}
 	}
 }
@@ -84,6 +104,36 @@ func (c *Consumer) Run(ctx context.Context) error {
 // Close releases the underlying Kafka reader.
 func (c *Consumer) Close() error {
 	return c.Reader.Close()
+}
+
+// Handle processes one consumed message inside a
+// "kafka.consume <topic>" span whose parent is the producer's span, read
+// from the message headers. That link is what makes a WorkReleased published
+// by wes-work-planning and the Task created here parts of a single
+// distributed trace.
+//
+// It is exported separately from Run so the propagation can be tested
+// without a live broker.
+func (c *Consumer) Handle(ctx context.Context, msg kafkago.Message) error {
+	ctx = observability.ExtractKafkaTrace(ctx, msg.Headers)
+
+	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
+		"kafka.consume "+msg.Topic,
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKafka,
+			semconv.MessagingDestinationName(msg.Topic),
+			semconv.MessagingOperationName("process"),
+		),
+	)
+	defer span.End()
+
+	if err := c.HandleMessage(ctx, msg.Value); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	return nil
 }
 
 // HandleMessage decodes raw as an Envelope and, if it is a not-yet-processed
@@ -113,7 +163,7 @@ func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 	required := requiredCapabilities(taskType)
 	orderRef := shared.OrderRef(env.Data.WorkUnitId)
 
-	if _, err := c.CreateTask.Execute(ctx, taskType, shared.NewCPT(env.Data.CPT), orderRef, required); err != nil {
+	if _, err := c.CreateTask.Execute(ctx, taskType, shared.NewCPT(env.Data.CPT), orderRef, required, env.Data.Fragile, env.Data.GiftWrap); err != nil {
 		return fmt.Errorf("kafka: create task: %w", err)
 	}
 	return nil

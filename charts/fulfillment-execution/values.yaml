@@ -79,6 +79,19 @@ kafka:
   enabled: false
   brokers: "kafka:9092"
 
+# Deployment environment, exported as the deployment.environment.name
+# resource attribute on every span and metric.
+environment: "local"
+
+# OpenTelemetry. Traces and metrics are PUSHED over OTLP/gRPC to a Collector;
+# the service never exposes a Prometheus scrape endpoint of its own. An
+# unreachable endpoint is not fatal -- the exporters dial lazily, so the pod
+# still starts and serves, it just drops telemetry.
+otel:
+  enabled: true
+  endpoint: "otel-collector.observability.svc.cluster.local:4317"
+  serviceName: "fulfillment-execution"
+
 extraEnv: []
 
 livenessProbe:
@@ -98,3 +111,74 @@ readinessProbe:
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# ---------------------------------------------------------------------------
+# Analytics data product (ADR-0012). When enabled, deploys two extra
+# workloads reading the dedicated analytics topic and a SEPARATE analytical
+# database:
+#   - projector: the ONLY writer of the analytical DB. Consumes
+#     warehouse.fulfillment.analytics and applies idempotent projections.
+#   - reports:   a READ-ONLY reader that serves GET /reports/... . It connects
+#     with a read-only role and never writes.
+# The OLTP deployment above is unchanged; it only additionally publishes to the
+# analytics topic (handled in-process by the execution binary).
+# ---------------------------------------------------------------------------
+analytics:
+  enabled: false
+
+  # Analytical database DSNs. The analytics topic itself is a compile-time
+  # constant in the binaries (warehouse.fulfillment.analytics), so it is not
+  # configured here. Both binaries read the env var ANALYTICS_DATABASE_URL;
+  # they are given SEPARATE secret values so the reader can use a read-only
+  # role while the projector uses a read-write role. This database MUST be
+  # different from the OLTP database.url above (ADR-0012).
+  database:
+    # Read-write DSN for the projector (the only writer).
+    projectorUrl: ""
+    # Read-only DSN for the reports reader. Falls back to projectorUrl when
+    # empty (acceptable for local/dev; use a distinct read-only role otherwise).
+    reportsUrl: ""
+    # When set, both deployments read ANALYTICS_DATABASE_URL from this existing
+    # secret instead of the chart-managed one (key below).
+    existingSecret: ""
+    existingSecretKey: "ANALYTICS_DATABASE_URL"
+
+  # Path (in the image) to the analytical golang-migrate migrations the
+  # projector runs on start.
+  migrationsPath: "migrations/analytics"
+
+  projector:
+    replicaCount: 1
+    adminAddr: ":8091"      # GET /healthz (ADMIN_ADDR)
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
+  reports:
+    replicaCount: 1
+    httpAddr: ":8080"       # GET /reports/... , /healthz (HTTP_ADDR)
+    service:
+      type: ClusterIP
+      port: 80
+      targetPort: 8080
+    ingress:
+      enabled: false
+      className: ""
+      annotations: {}
+      hosts:
+        - host: fulfillment-reports.local
+          paths:
+            - path: /
+              pathType: Prefix
+      tls: []
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi

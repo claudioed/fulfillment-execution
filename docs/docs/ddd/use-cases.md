@@ -76,6 +76,14 @@ It reads the `Task` to check three things — that it exists, that it is a
 is asked to know about the other; the rule lives in the layer that can see
 both.
 
+When `ClassificationLookup` (`ports.ProductClassificationLookup`) is wired,
+`SealPackage` also performs a live, synchronous classification lookup per
+scanned SKU — see [ADR-0010](../adr/0010-package-segregation-and-sort-lane.md).
+Unlike `Fragile`, this cannot be stamped onto `Task` at release time: a
+Pack task's contents are discovered live at the scan station, not known
+when the task was released. The port is nil-safe (permissive by default),
+mirroring `inventory-storage`'s own `LocationLookup` pattern on `StowStock`.
+
 ### `ExpireLeases` — the sweep
 
 Takes no `now` argument: time comes from `ports.Clock`. It walks every
@@ -105,6 +113,7 @@ these interfaces; adapters implement them.
 | `EventPublisher` | `Publish(ctx, events...)` | `events` (log/buffered), `kafka` |
 | `Clock` | `Now()` | `memory.SystemClock`, fixed clocks in tests |
 | `ProcessedEvents` | `MarkProcessed(ctx, eventId) (bool, error)` | `memory`, `postgres` |
+| `ProductClassificationLookup` | `GetClassification(ctx, sku) (ClassificationInfo, error)` | `productclassification` (http client, permissive no-op) |
 
 ### Two ports that carry design weight
 

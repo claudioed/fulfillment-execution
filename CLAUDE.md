@@ -17,22 +17,31 @@ nothing; application depends on domain; adapters depend on application/domain.**
 No framework or SQL types in the domain layer.
 
 ```
-cmd/execution/               main.go — composition root
+cmd/execution/               main.go — OLTP composition root
+cmd/fulfillment-projector/   analytics WRITER: analytics topic -> analytical DB
+cmd/fulfillment-reports/     analytics READ-ONLY READER: serves GET /reports/...
+cmd/mcp/                     MCP server (adds the report tool)
 internal/
   domain/
     task/                    Task aggregate (Pick|Pack|SLAM lifecycle, lease)
     station/                 Station aggregate (occupant, capabilities)
     package/                 Package aggregate (pack -> sealed; SLAM weigh-check)
     shared/                  value objects: TaskId, StationId, CPT, Capability, events
+  analytics/report/          analytical read model + store ports (ADR-0012)
   application/
     ports/                   OUT: TaskRepo, StationRepo, PackageRepo, EventPublisher, Clock
     usecases/                one struct per use case
   adapters/
-    inbound/http/            chi handlers, DTOs, error mapping
+    inbound/http/            chi handlers, DTOs, error mapping (OLTP + reports)
+    inbound/kafka/           WorkReleased consumer + analytics projector consumer
+    inbound/mcp/             MCP tools (incl. get_fulfillment_throughput_report)
     outbound/postgres/       pgxpool repos + migrations
+    outbound/analyticsstore/ analytical DB writer + read-only reader
     outbound/memory/         in-memory repos for tests/local
-    outbound/events/         log/buffered publisher (kafka-ready iface)
+    outbound/kafka/          integration publisher + analytics publisher
+    outbound/events/         log/buffered/multi publisher
 migrations/                  golang-migrate SQL files
+migrations/analytics/        analytical schema migrations
 ```
 
 ## Ubiquitous Language (use these exact names)
@@ -50,6 +59,32 @@ migrations/                  golang-migrate SQL files
 - **Package** — pack output: an order becomes a sealed carton. **SLAM weigh-check**:
   actual weight must be within tolerance of expected, else the package is diverted.
 - **Process path** — Pick / Pack / SLAM as named task types (queues), not steps.
+- **Fragile (packing hint)** — `Task.Fragile()` and the derived `Package.FragileHandling()`.
+  Stamped onto the Task by `wes-work-planning` at release time (from
+  `inventory-storage`'s `ProductClassification`, read once upstream — this
+  service never calls inventory-storage directly). `SealPackage` derives
+  `FragileHandling` from the owning task's flag, not a separate caller input.
+  Affects packing/downstream sortation only — it does NOT gate claiming.
+- **Hazmat (station capability)** — `"hazmat"` is a real, known value of the
+  existing open `Capability`/`CapabilitySet` type (see `claimNext` above).
+  A Task requiring hazmat handling sets it in `requiredCapabilities`; only a
+  Station registered with that capability can claim it. This already worked
+  via the pre-existing generic capability-matching mechanism — no structural
+  change was needed to support it (ADR-0009).
+- **Package segregation & SortLane (ADR-0010)** — `SealPackage` performs a
+  LIVE, synchronous per-scanned-SKU classification lookup (new outbound port
+  `ports.ProductClassificationLookup`, permissive-by-default HTTP adapter
+  mirroring inventory-storage's own `facilitylayout` pattern:
+  `PRODUCT_CLASSIFICATION_MODE=http|permissive`) — NOT a value stamped onto
+  the Task at release time, because a Pack task's contents (which SKUs get
+  scanned into it) are only known live at the scan station, not at release.
+  `Package.ScanItemWithClass` rejects a scan whose DOT hazard class is
+  incompatible (same 9×9 matrix as inventory-storage, duplicated by
+  deliberate cross-repo convention) with an already-scanned item's class,
+  raising `ErrPackageSegregationViolation`. `Package.SortLane()` derives
+  `HAZMAT_LANE` > `FRAGILE_NO_TILT` > `STANDARD` (hazmat always wins) — a
+  WES-tier routing DECISION only; no WCS device/conveyor execution exists
+  or is planned in this workspace.
 
 ## Aggregates & invariants (enforce in domain, unit-tested)
 
@@ -67,11 +102,14 @@ WeightDiscrepancyDetected, LabelApplied, PackageDiverted.
 
 ## Use cases (application layer)
 
-1. CreateTask(type, cpt, ref, requiredCapabilities) -> Task in pool
+1. CreateTask(type, cpt, ref, requiredCapabilities, fragile) -> Task in pool
 2. ClaimNext(stationId, capabilities) -> leases + returns best-fit pending task
 3. RenewLease(taskId, stationId) -> extends lease
 4. CompleteTask(taskId, stationId) -> TaskCompleted (validates claim ownership)
-5. SealPackage(taskId, contents) -> Package (Pack path)
+5. SealPackage(taskId, contents) -> Package (Pack path); FragileHandling
+   derived from the task's Fragile flag; performs a live per-SKU DOT hazard
+   classification lookup and rejects on same-package segregation violation
+   (ADR-0010)
 6. RunSlam(packageId, actualWeight, expectedWeight) -> LabelApplied or Diverted
 7. GetQueueDepth(taskType) -> read model
 8. ExpireLeases(now) -> sweeps expired claims back to Pending (Clock-driven)
@@ -90,6 +128,28 @@ WeightDiscrepancyDetected, LabelApplied, PackageDiverted.
 - GET  /healthz
 
 JSON DTOs live in the http adapter; never leak domain structs.
+
+## Analytics data product (ADR-0012)
+
+Additive read side built from this service's OWN domain events. The OLTP
+domain/application layers are NOT modified and must NOT import the analytics
+store (arch-test enforces). `internal/analytics/report/` depends on nothing.
+
+- Events are fanned to a SEPARATE topic `warehouse.fulfillment.analytics` by a
+  NEW outbound adapter (`outbound/kafka/analytics_publisher.go`). The
+  integration topic `warehouse.fulfillment.events` and its publisher are
+  untouched. Task-scoped events are enriched with `task_type` via a TaskRepo
+  lookup (domain events stay thin).
+- SEPARATE analytical Postgres (`ANALYTICS_DATABASE_URL`), own migrations
+  (`migrations/analytics/`), read-only role for the reader.
+- Three processes: `cmd/execution` (OLTP), `cmd/fulfillment-projector` (the ONLY
+  writer of the analytical DB; consumes the analytics topic from FirstOffset,
+  idempotent on event_id), `cmd/fulfillment-reports` (read-only reader).
+- Report: Throughput & Lease-Health, keyed task-type × station × hour.
+  - GET /reports/throughput?from&to&taskType&stationId&granularity  (reports binary)
+  - GET /reports/throughput/freshness                               (lag vs real time)
+  - MCP tool `get_fulfillment_throughput_report` (calls the reports REST; never
+    opens the analytical DB directly).
 
 ## Tech & standards
 

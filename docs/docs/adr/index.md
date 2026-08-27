@@ -99,3 +99,8 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0005](./0005-rfc-7807-problem-details.md) | RFC 7807 `application/problem+json` for every error response | Accepted |
 | [0006](./0006-arch-go-architecture-fitness-tests.md) | arch-go fitness tests to enforce the dependency rule | Accepted |
 | [0007](./0007-godog-bdd-acceptance-tests.md) | godog (Gherkin) acceptance tests for the invariants | Accepted |
+| [0008](./0008-mcp-inbound-adapter.md) | Model Context Protocol as an inbound adapter, not a new service | Accepted |
+| [0009](./0009-fragile-and-hazmat-handling-flags.md) | Fragile and hazmat handling flags carried on Task and Package | Accepted |
+| [0010](./0010-package-segregation-and-sort-lane.md) | Live per-item DOT hazard classification, same-package segregation, and SortLane | Accepted |
+| [0011](./0011-gift-wrap-handling-flag.md) | Gift wrap handling flag carried on Task and Package | Accepted |
+| [0012](./0012-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted |

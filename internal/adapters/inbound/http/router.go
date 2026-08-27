@@ -7,6 +7,9 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/riandyrn/otelchi"
+
+	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
 // NewRouter builds the chi router for every Fulfillment Execution endpoint.
@@ -18,6 +21,17 @@ func NewRouter(h *Handlers, logger *slog.Logger) *chi.Mux {
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID)
+	// otelchi runs before the logger so every log line emitted downstream
+	// sits inside the request span and picks up its trace_id/span_id.
+	// WithChiRoutes makes the span name the route pattern
+	// (POST /tasks/{id}/complete) rather than the raw path, keeping span
+	// names low-cardinality.
+	r.Use(otelchi.Middleware(
+		observability.ServiceName(),
+		otelchi.WithChiRoutes(r),
+		otelchi.WithRequestMethodInSpanName(true),
+	))
+	r.Use(observability.HTTPServerMetrics())
 	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
 
@@ -39,6 +53,10 @@ func NewRouter(h *Handlers, logger *slog.Logger) *chi.Mux {
 // request via logger, including status, duration, response size and the
 // chi request id. Responses with a 5xx status are logged at Error level;
 // everything else logs at Info level.
+//
+// It logs through the *Context flavours of the slog API so that, when the
+// logger is wrapped in observability.NewSlogHandler, each line also carries
+// the trace_id/span_id of the request span otelchi started upstream.
 func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,9 +74,9 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				"request_id", middleware.GetReqID(r.Context()),
 			}
 			if ww.Status() >= 500 {
-				logger.Error("http request", attrs...)
+				logger.ErrorContext(r.Context(), "http request", attrs...)
 			} else {
-				logger.Info("http request", attrs...)
+				logger.InfoContext(r.Context(), "http request", attrs...)
 			}
 		})
 	}

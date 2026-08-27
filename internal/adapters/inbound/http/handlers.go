@@ -40,6 +40,8 @@ func toTaskResponse(t *task.Task) taskResponse {
 		CPT:                  t.CPT().Time(),
 		OrderRef:             string(t.OrderRef()),
 		RequiredCapabilities: caps,
+		Fragile:              t.Fragile(),
+		GiftWrap:             t.GiftWrap(),
 	}
 	if lease := t.Lease(); lease != nil {
 		stationId := string(lease.StationId)
@@ -52,10 +54,13 @@ func toTaskResponse(t *task.Task) taskResponse {
 
 func toPackageResponse(p *pack.Package) packageResponse {
 	return packageResponse{
-		Id:              string(p.Id()),
-		OrderRef:        string(p.OrderRef()),
-		Status:          string(p.Status()),
-		ScannedContents: p.ScannedContents(),
+		Id:                string(p.Id()),
+		OrderRef:          string(p.OrderRef()),
+		Status:            string(p.Status()),
+		ScannedContents:   p.ScannedContents(),
+		FragileHandling:   p.FragileHandling(),
+		GiftWrapRequested: p.GiftWrapRequested(),
+		SortLane:          p.SortLane(),
 	}
 }
 
@@ -88,7 +93,11 @@ func (h *Handlers) PostTask(w http.ResponseWriter, r *http.Request) {
 		caps[i] = shared.Capability(c)
 	}
 
-	t, err := h.CreateTask.Execute(r.Context(), task.Type(req.Type), shared.NewCPT(req.CPT), shared.OrderRef(req.OrderRef), shared.NewCapabilitySet(caps...))
+	// giftWrap is deliberately not accepted from createTaskRequest: unlike
+	// fragile, it has exactly one ingestion path (WorkReleased.data.gift_wrap
+	// via the Kafka consumer — see ADR-0011), so a direct HTTP POST /tasks
+	// caller always gets false here; the taskResponse field is read-only.
+	t, err := h.CreateTask.Execute(r.Context(), task.Type(req.Type), shared.NewCPT(req.CPT), shared.OrderRef(req.OrderRef), shared.NewCapabilitySet(caps...), req.Fragile, false)
 	if err != nil {
 		writeError(w, r, err)
 		return

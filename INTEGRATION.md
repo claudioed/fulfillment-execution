@@ -45,6 +45,24 @@ skip (ack/commit anyway) — do not create a duplicate Task for the same
 Unit-test: consuming the same `WorkReleased` event_id twice creates exactly
 one Task.
 
+---
+
+## Addendum — `data.fragile` (product-classification handling flags round)
+
+`WorkReleased.data` gained an optional `fragile: bool` field, defaulting to
+`false` when absent — the same kind of known simplification as the `path_id`
+prefix convention above, and documented the same way in this repo's own
+README/INTEGRATION notes. It is sourced from `inventory-storage`'s
+`ProductClassification` concept and stamped by `wes-work-planning` at
+release time; this service does not call `inventory-storage` directly. It
+maps straight onto the created `Task.Fragile` flag with no interpretation,
+and `SealPackage` later derives `Package.FragileHandling` from it. See
+`docs/docs/adr/0009-fragile-and-hazmat-handling-flags.md`.
+
+Hazmat handling required **no change to this consumer or to `CreateTask`**:
+it is a `requiredCapabilities` value (`hazmat`) matched by the pre-existing
+generic `CapabilitySet` mechanism.
+
 ## Definition of done for Task 7
 
 - New consumer adapter compiles and is unit-tested (feed it a fake envelope,

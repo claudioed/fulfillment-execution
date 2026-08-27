@@ -7,6 +7,7 @@ type createTaskRequest struct {
 	CPT                  time.Time `json:"cpt"`
 	OrderRef             string    `json:"orderRef"`
 	RequiredCapabilities []string  `json:"requiredCapabilities"`
+	Fragile              bool      `json:"fragile"`
 }
 
 // validate reports the first missing required field, or "" if the request
@@ -33,6 +34,8 @@ type taskResponse struct {
 	CPT                  time.Time  `json:"cpt"`
 	OrderRef             string     `json:"orderRef"`
 	RequiredCapabilities []string   `json:"requiredCapabilities"`
+	Fragile              bool       `json:"fragile"`
+	GiftWrap             bool       `json:"giftWrap"`
 	LeaseStationId       *string    `json:"leaseStationId,omitempty"`
 	LeaseExpiry          *time.Time `json:"leaseExpiry,omitempty"`
 }
@@ -86,10 +89,13 @@ func (r sealPackageRequest) validate() string {
 }
 
 type packageResponse struct {
-	Id              string   `json:"id"`
-	OrderRef        string   `json:"orderRef"`
-	Status          string   `json:"status"`
-	ScannedContents []string `json:"scannedContents"`
+	Id                string   `json:"id"`
+	OrderRef          string   `json:"orderRef"`
+	Status            string   `json:"status"`
+	ScannedContents   []string `json:"scannedContents"`
+	FragileHandling   bool     `json:"fragileHandling"`
+	GiftWrapRequested bool     `json:"giftWrapRequested"`
+	SortLane          string   `json:"sortLane"`
 }
 
 type runSlamRequest struct {

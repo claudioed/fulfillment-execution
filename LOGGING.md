@@ -27,6 +27,30 @@ Any unrecognized value falls back to `info`.
 - **Composition root**: `cmd/execution/main.go` builds the process-wide
   `*slog.Logger` from `LOG_LEVEL`, sets it as `slog.Default()`, and passes it
   into the adapters above.
+- **OpenTelemetry SDK**: its own errors (a failed export, a bad instrument)
+  are routed into this logger at `Warn` level by an `otel.SetErrorHandler`
+  installed in `observability.Setup`, so they are JSON like everything else
+  rather than plain text on stderr.
+
+## Trace correlation
+
+The JSON handler is wrapped by `observability.NewSlogHandler`
+(`internal/observability/slogotel.go`). When a record is logged with a
+context that carries an active span, the handler appends `trace_id` and
+`span_id`:
+
+```json
+{"time":"...","level":"INFO","msg":"http request","method":"POST","path":"/tasks",
+ "status":201,"trace_id":"8812c36621d214139a08949823716b93","span_id":"14ddf02dbd8913ba"}
+```
+
+This only works through the **context-carrying** flavours of the slog API
+(`InfoContext`, `ErrorContext`, ...) — a plain `logger.Info` has no context
+to read a span from. The request logger, the log publisher and the Kafka
+consumer all use the `*Context` forms for this reason.
+
+See the [Observability section of the README](README.md#observability) for
+what else the telemetry pipeline exports.
 
 ## Why `log/slog`
 
@@ -37,6 +61,6 @@ Any unrecognized value falls back to `info`.
   throughput or feature need; `zerolog` and `zap` are faster but that speed
   is not needed at this study-project's throughput, and each pulls in an
   external dependency this codebase doesn't otherwise require.
-- **Observability on-ramp**: `slog` has an official OpenTelemetry bridge
-  (`otelslog`), so wiring these logs into a tracing/metrics pipeline later
-  is a drop-in swap of the handler, not a rewrite of every call site.
+- **Observability on-ramp**: `slog`'s handler interface made trace
+  correlation a wrapper around the existing JSON handler rather than a
+  rewrite of every call site — which is exactly how it was added.

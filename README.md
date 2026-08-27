@@ -36,22 +36,31 @@ on nothing; application depends on domain; adapters depend on
 application/domain.**
 
 ```
-cmd/execution/               main.go — composition root
+cmd/execution/               main.go — OLTP composition root
+cmd/fulfillment-projector/   analytics WRITER: analytics topic -> analytical DB
+cmd/fulfillment-reports/     analytics READ-ONLY READER: serves GET /reports/...
+cmd/mcp/                      MCP server (adds the report tool)
 internal/
   domain/
     task/                    Task aggregate (Pick|Pack|SLAM lifecycle, lease)
     station/                 Station aggregate (occupant, capabilities)
     package/                 Package aggregate (pack -> sealed; SLAM weigh-check)
     shared/                  value objects: TaskId, StationId, CPT, Capability, events
+  analytics/report/          analytical read model + store ports (ADR-0012)
   application/
     ports/                   OUT: TaskRepo, StationRepo, PackageRepo, EventPublisher, Clock
     usecases/                one struct per use case
   adapters/
-    inbound/http/            chi handlers, DTOs, error mapping
+    inbound/http/            chi handlers, DTOs, error mapping (OLTP + reports)
+    inbound/kafka/           WorkReleased consumer + analytics projector consumer
+    inbound/mcp/             MCP tools (incl. get_fulfillment_throughput_report)
     outbound/postgres/       pgxpool repos + migrations
+    outbound/analyticsstore/ analytical DB writer + read-only reader
     outbound/memory/         in-memory repos for tests/local
-    outbound/events/         log/buffered publisher (kafka-ready iface)
+    outbound/kafka/          integration publisher + analytics publisher
+    outbound/events/         log/buffered/multi publisher
 migrations/                  golang-migrate SQL files
+migrations/analytics/        analytical schema migrations
 ```
 
 `internal/domain/package` is a Go package named `pack` (not `package`, which
@@ -84,6 +93,35 @@ with the `golang-migrate` CLI instead:
 migrate -path migrations -database "$DATABASE_URL" up
 ```
 
+### Analytics data product (report)
+
+The analytical **report** is a separate read side built from this service's own
+domain events (see [ADR-0012](docs/docs/adr/0012-analytical-data-product.md)).
+It runs as **two extra processes** against a **separate analytical database**,
+fed by a dedicated Kafka topic `warehouse.fulfillment.analytics`:
+
+```sh
+# 0. OLTP service publishing to Kafka (integration + analytics topics)
+export KAFKA_BROKERS=localhost:9092
+EVENT_PUBLISHER=kafka DATABASE_URL="$DATABASE_URL" go run ./cmd/execution
+
+# 1. projector (WRITER): consumes the analytics topic -> analytical DB.
+#    Runs the analytical migrations (migrations/analytics) on start.
+export ANALYTICS_DATABASE_URL="postgres://fx_analytics:***@localhost:5432/fulfillment_analytics?sslmode=disable"
+go run ./cmd/fulfillment-projector           # /healthz on :8091 (ADMIN_ADDR)
+
+# 2. reports (READ-ONLY READER): serves GET /reports/... from the analytical DB.
+#    Point it at a read-only-role DSN in anything shared.
+ANALYTICS_DATABASE_URL="$ANALYTICS_DATABASE_URL" HTTP_ADDR=:8092 go run ./cmd/fulfillment-reports
+
+# query the report
+curl "localhost:8092/reports/throughput?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z"
+curl "localhost:8092/reports/throughput/freshness"
+```
+
+The projector is the **only** writer of the analytical DB; the reports binary
+connects read-only. The OLTP `cmd/execution` never opens the analytical DB.
+
 ### Configuration
 
 | Env var        | Default | Purpose                          |
@@ -91,7 +129,62 @@ migrate -path migrations -database "$DATABASE_URL" up
 | `HTTP_ADDR`    | `:8080` | HTTP listen address               |
 | `DATABASE_URL` | (unset) | Postgres DSN; unset selects memory adapters |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list, used by both the `WorkReleased` consumer and the `TaskCompleted` publisher |
-| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` |
+| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` AND fans every domain event to `warehouse.fulfillment.analytics` (feeds the report) |
+| `ANALYTICS_DATABASE_URL` | (unset) | Analytical DB DSN, read by `cmd/fulfillment-projector` (read-write) and `cmd/fulfillment-reports` (read-only role). MUST be a different database from `DATABASE_URL` |
+| `ANALYTICS_MIGRATIONS_PATH` | `migrations/analytics` | Analytical golang-migrate migrations the projector runs on start |
+| `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
+| `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTel Collector's OTLP/gRPC address (see [Observability](#observability)) |
+| `OTEL_SERVICE_NAME` | `fulfillment-execution` | `service.name` resource attribute |
+| `SERVICE_VERSION` | `dev` | `service.version` resource attribute |
+| `ENVIRONMENT`  | `local` | `deployment.environment.name` resource attribute |
+
+## Observability
+
+Traces and metrics are exported over **OTLP/gRPC** to an OpenTelemetry
+Collector; the service does not expose a Prometheus scrape endpoint of its
+own — the Collector handles Prometheus exposition for the whole fleet. A
+Collector is expected at `OTEL_EXPORTER_OTLP_ENDPOINT` (default
+`localhost:4317`); in the `warehouse-infra` kind cluster the Helm chart
+points that at the in-cluster Collector Service
+(`otel-collector.observability.svc.cluster.local:4317`).
+
+**An unreachable Collector is never fatal.** The OTLP exporters dial lazily
+and no blocking dial option is set, so with nothing listening the service
+still starts and serves at full speed — telemetry is simply dropped.
+
+### What gets exported
+
+| Signal | What |
+|--------|------|
+| Traces | One server span per HTTP request (via `otelchi`), named after the **route pattern** (`POST /tasks/{id}/complete`) rather than the raw path; a child span per Postgres query/batch/copy/acquire (via `otelpgx`), carrying the parameterised SQL — query values are never recorded; `kafka.publish <topic>` / `kafka.consume <topic>` spans around the Kafka boundary |
+| Metrics | `http.server.request.duration` (histogram, seconds, by route + method + status); `fulfillment.tasks.claimed` and `fulfillment.tasks.completed` counters attributed by `task.type` (Pick \| Pack \| SLAM); pgxpool connection gauges; Go runtime metrics (goroutines, GC, memory) |
+| Logs | Structured JSON on stdout. Any log emitted while a span is active also carries `trace_id` and `span_id`, so a log line links straight to its trace |
+
+The two task counters are incremented inside the `ClaimNext` and
+`CompleteTask` **use cases**, not in the HTTP handler, so they count the real
+domain events — a rejected claim or a rejected completion does not count.
+
+### Distributed tracing across services
+
+Trace context crosses the Kafka boundary in the message headers (W3C
+`traceparent`), injected on publish and extracted on consume. A `WorkReleased`
+published by `wes-work-planning` and the `Task` created from it here are
+therefore parts of a **single trace**, as is the `TaskCompleted` this service
+publishes back onto `warehouse.fulfillment.events`.
+
+### Seeing it locally
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317 LOG_LEVEL=info go run ./cmd/execution
+```
+
+Every request line then looks like:
+
+```json
+{"time":"...","level":"INFO","msg":"http request","method":"POST","path":"/tasks",
+ "status":201,"trace_id":"8812c36621d214139a08949823716b93","span_id":"14ddf02dbd8913ba"}
+```
 
 ## Local development / quality gate
 
@@ -191,9 +284,16 @@ curl -sX POST localhost:8080/tasks \
         "type": "PICK",
         "cpt": "2026-01-01T18:00:00Z",
         "orderRef": "order-42",
-        "requiredCapabilities": ["pick"]
+        "requiredCapabilities": ["pick"],
+        "fragile": false
       }'
 ```
+
+`fragile` is optional (defaults to `false`); it is a packing hint normally
+stamped by `wes-work-planning` at release time, not something a human caller
+typically sets by hand. `requiredCapabilities` may include `hazmat` — see
+[Integration](#integration) below and `docs/docs/adr/0009-fragile-and-hazmat-handling-flags.md`
+for why that needs no special handling beyond the value itself.
 
 ### Register a station
 
@@ -301,11 +401,12 @@ Identical across all four warehouse-systems services:
   "event_type": "WorkReleased",
   "occurred_at": "2026-08-21T22:00:00Z",
   "source": "wes-work-planning",
-  "data": {"path_id": "...", "work_unit_id": "...", "cpt": "RFC3339", "ref": "..."}
+  "data": {"path_id": "...", "work_unit_id": "...", "cpt": "RFC3339", "ref": "...", "fragile": false}
 }
 ```
 
-Messages whose `event_type` isn't `"WorkReleased"` are ignored.
+Messages whose `event_type` isn't `"WorkReleased"` are ignored. `data.fragile`
+is optional — see the Mapping section below.
 
 ### Mapping (known simplification)
 
@@ -319,7 +420,24 @@ anything else defaults to **Pick**. The rest of the mapping:
 | `data.path_id` (prefix) | task type (Pick/Pack/SLAM, default Pick)              |
 | `data.work_unit_id`     | `ref`                                                 |
 | `data.cpt`               | `cpt`                                                 |
+| `data.fragile` (optional, default `false`) | `fragile` — a packing hint, see below |
 | task type                | required capabilities (`pick`, `pack`, or `slam`)     |
+
+**`data.fragile` is optional** (another known simplification, same shape as
+the `path_id`-prefix rule above): it is sourced from
+`inventory-storage`'s `ProductClassification` concept and stamped by
+`wes-work-planning` at release time, but any already-documented producer that
+predates this field simply omits it, and the consumer defaults to `false`
+rather than rejecting the message. When present and `true`, it means the
+order line was classified Fragile upstream; this service threads it straight
+into the created `Task.Fragile` flag (no interpretation), and later derives
+`Package.FragileHandling` from it in `SealPackage` when the Pack task's
+contents are sealed. It does not affect claiming — a fragile task is claimed
+by capability match exactly like any other. It also has nothing to do with
+hazmat: hazmat is a `requiredCapabilities` value (`hazmat`), matched by the
+existing generic capability-set mechanism in `Task.Claim` / `RegisterStation`
+— no code change was needed there, only documentation (see
+`docs/docs/adr/0009-fragile-and-hazmat-handling-flags.md`).
 
 ### Idempotency
 

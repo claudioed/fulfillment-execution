@@ -19,6 +19,16 @@ const (
 	Diverted Status = "DIVERTED"
 )
 
+// SortLane values are the WES-tier sortation routing decision Package
+// derives via SortLane() — see ADR-0010. This is a decision only: no WCS
+// device/conveyor integration exists or is planned in this repository. A
+// real WCS system would consume SortLane as its own inbound fact.
+const (
+	SortLaneHazmat        = "HAZMAT_LANE"
+	SortLaneFragileNoTilt = "FRAGILE_NO_TILT"
+	SortLaneStandard      = "STANDARD"
+)
+
 var (
 	// ErrNoScannedContents is returned when sealing is attempted with no
 	// scanned contents (cannot seal without scanned contents).
@@ -30,6 +40,14 @@ var (
 	// ErrAlreadyProcessed is returned when SLAM is attempted on a package
 	// that already has a label applied or was diverted.
 	ErrAlreadyProcessed = errors.New("package: SLAM already processed")
+	// ErrPackageSegregationViolation is returned when a scanned item's DOT
+	// hazard class is incompatible — per the class-level segregation
+	// matrix in segregation.go — with an already-scanned item's hazard
+	// class in the same package. An item with no hazard class (Known
+	// false, or Known true but not Hazmat) never triggers or blocks this
+	// check: fail-open, consistent with every other classification
+	// consumer in this system (see ADR-0010).
+	ErrPackageSegregationViolation = errors.New("package: item's DOT hazard class is incompatible with an already-scanned item")
 )
 
 // WeightTolerance is the maximum allowed |actual-expected| deviation, in the
@@ -38,20 +56,45 @@ const WeightTolerance = 0.05
 
 // Package is the aggregate root for pack output: an order becoming a sealed carton.
 type Package struct {
-	id              shared.PackageId
-	orderRef        shared.OrderRef
-	status          Status
-	scannedContents []string
+	id                   shared.PackageId
+	orderRef             shared.OrderRef
+	status               Status
+	scannedContents      []string
+	fragileHandling      bool
+	giftWrapRequested    bool
+	scannedHazardClasses []int
 }
 
-// New creates an empty, open package for the given order.
-func New(id shared.PackageId, orderRef shared.OrderRef) *Package {
-	return &Package{id: id, orderRef: orderRef, status: Open}
+// New creates an empty, open package for the given order. fragileHandling is
+// derived from the owning Pack task's Fragile flag (itself stamped by
+// wes-work-planning from inventory-storage's ProductClassification) — true
+// if any of the package's scanned/sealed contents came from an order line
+// classified Fragile, so downstream packing/sortation can route it
+// accordingly. giftWrapRequested is derived the same way from the owning
+// task's GiftWrap flag (itself stamped by wes-work-planning from an
+// explicit gift-wrap request made at work-enqueue time, not a product
+// classification) — see ADR-0011. Both flags are independently derived and
+// kept separate; neither is merged into the other.
+func New(id shared.PackageId, orderRef shared.OrderRef, fragileHandling bool, giftWrapRequested bool) *Package {
+	return &Package{id: id, orderRef: orderRef, status: Open, fragileHandling: fragileHandling, giftWrapRequested: giftWrapRequested}
 }
 
-// Rehydrate reconstructs a Package from persisted state.
-func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, status Status, scannedContents []string) *Package {
-	return &Package{id: id, orderRef: orderRef, status: status, scannedContents: scannedContents}
+// Rehydrate reconstructs a Package from persisted state. scannedHazardClasses
+// carries the DOT hazard class (1-9) recorded per already-scanned item at
+// the same index into scannedContents that had a known Hazmat classification
+// at scan time — see ScanItemWithClass. A nil/empty slice is valid: it means
+// no scanned item in this package ever carried a hazard class (the common
+// case, and the only case for every package sealed before this feature).
+func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, status Status, scannedContents []string, fragileHandling bool, scannedHazardClasses []int, giftWrapRequested bool) *Package {
+	return &Package{
+		id:                   id,
+		orderRef:             orderRef,
+		status:               status,
+		scannedContents:      scannedContents,
+		fragileHandling:      fragileHandling,
+		scannedHazardClasses: scannedHazardClasses,
+		giftWrapRequested:    giftWrapRequested,
+	}
 }
 
 func (p *Package) Id() shared.PackageId      { return p.id }
@@ -59,13 +102,87 @@ func (p *Package) OrderRef() shared.OrderRef { return p.orderRef }
 func (p *Package) Status() Status            { return p.status }
 func (p *Package) ScannedContents() []string { return p.scannedContents }
 
-// ScanItem records a scanned item as part of the package's contents.
+// ScannedHazardClasses returns the DOT hazard class recorded for each
+// already-scanned item that carried a known Hazmat classification at scan
+// time — see ScanItemWithClass. The returned slice is independent of
+// ScannedContents' indexing (an unclassified item never appends here), so
+// callers needing per-SKU hazard class must correlate via ScanItemWithClass
+// call order themselves; this accessor exists for persistence round-trip
+// and for SortLane, neither of which needs that correlation.
+func (p *Package) ScannedHazardClasses() []int { return p.scannedHazardClasses }
+
+// FragileHandling reports whether this package requires fragile packing
+// care, derived at construction time from the owning task's Fragile flag.
+func (p *Package) FragileHandling() bool { return p.fragileHandling }
+
+// GiftWrapRequested reports whether this package should be gift-wrapped,
+// derived at construction time from the owning task's GiftWrap flag. Unlike
+// hazmat, this is not a station-eligibility/capability concern — any
+// station may fulfill a gift-wrap request; it is a packing concern only,
+// same category as FragileHandling (see ADR-0011).
+func (p *Package) GiftWrapRequested() bool { return p.giftWrapRequested }
+
+// ScanItem records a scanned item as part of the package's contents, with no
+// DOT hazard class information (equivalent to ScanItemWithClass(sku, 0)).
+// Existing callers that never look up classification keep working exactly
+// as before this feature — permissive by construction.
 func (p *Package) ScanItem(sku string) error {
+	return p.ScanItemWithClass(sku, 0)
+}
+
+// ScanItemWithClass records a scanned item as part of the package's
+// contents, additionally checking hazardClass (a DOT hazard class 1-9, or 0
+// meaning "no hazard class" — unclassified, or classified but not Hazmat)
+// against every already-scanned item's hazard class via the segregation
+// matrix (segregation.go) before appending. It rejects with
+// ErrPackageSegregationViolation on the first incompatible pair found,
+// leaving the package's scanned contents unchanged (the item is not
+// appended). hazardClass == 0 never triggers or blocks segregation and is
+// never itself recorded into ScannedHazardClasses — fail-open for
+// unclassified/non-hazmat items, matching every other classification
+// consumer in this system (see ADR-0010).
+func (p *Package) ScanItemWithClass(sku string, hazardClass int) error {
 	if p.status != Open {
 		return ErrAlreadySealed
 	}
+	if hazardClass != 0 {
+		for _, existing := range p.scannedHazardClasses {
+			if IsSegregationIncompatible(hazardClass, existing) {
+				return ErrPackageSegregationViolation
+			}
+		}
+	}
 	p.scannedContents = append(p.scannedContents, sku)
+	if hazardClass != 0 {
+		p.scannedHazardClasses = append(p.scannedHazardClasses, hazardClass)
+	}
 	return nil
+}
+
+// SortLane derives the WES-tier sortation routing decision for this
+// package, in this priority order (see ADR-0010):
+//
+//  1. HAZMAT_LANE — if any scanned item carried a DOT hazard class (i.e.
+//     ScannedHazardClasses is non-empty).
+//  2. FRAGILE_NO_TILT — else if FragileHandling() is true (ADR-0009's
+//     existing, already-shipped derived flag).
+//  3. STANDARD — otherwise.
+//
+// Hazmat beats fragile deliberately: a package containing regulated
+// hazardous material has a real physical/regulatory routing requirement
+// that supersedes a packing-care hint. Computed lazily on every call
+// rather than stored, so it can never drift from ScannedHazardClasses/
+// FragileHandling and needs no migration when either input changes shape —
+// see ADR-0010 for the tradeoff (a stored field would save a slice length
+// check, an unmeasurable cost at this scale).
+func (p *Package) SortLane() string {
+	if len(p.scannedHazardClasses) > 0 {
+		return SortLaneHazmat
+	}
+	if p.fragileHandling {
+		return SortLaneFragileNoTilt
+	}
+	return SortLaneStandard
 }
 
 // Seal closes the package. Cannot seal without scanned contents.

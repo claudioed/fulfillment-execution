@@ -24,11 +24,13 @@ classDiagram
         -OrderRef orderRef
         -CapabilitySet requiredCapabilities
         -Lease* lease
+        -bool fragile
         +Claim(stationId, capabilities, now, duration) error
         +RenewLease(stationId, now, duration) error
         +Complete(stationId, now) error
         +ExpireLeaseIfDue(now) bool
         +IsAvailable(now) bool
+        +Fragile() bool
     }
     class Lease {
         <<Value Object>>
@@ -51,9 +53,14 @@ classDiagram
         -OrderRef orderRef
         -Status status : OPEN|SEALED|LABELED|DIVERTED
         -string[] scannedContents
+        -bool fragileHandling
+        -int[] scannedHazardClasses
         +ScanItem(sku) error
+        +ScanItemWithClass(sku, hazardClass) error
         +Seal() error
         +Weigh(expected, actual) (bool, error)
+        +FragileHandling() bool
+        +SortLane() string
     }
     Task *-- Lease : at most one
     Task ..> Station : capability match only
@@ -149,6 +156,7 @@ SLAM weigh-check.
 | P3 | **SLAM requires a sealed package.** | `Package.Weigh` | `pack.ErrNotSealed` | `409` |
 | P4 | **SLAM runs once.** A labelled or diverted package rejects a second weigh-check. | `Package.Weigh` | `pack.ErrAlreadyProcessed` | `409` |
 | P5 | **SLAM diverts on weight discrepancy.** If `\|actual − expected\| > WeightTolerance` the package becomes `DIVERTED` instead of `LABELED`. | `Package.Weigh` | *(not an error — a domain outcome)* | `200` |
+| P6 | **Same-package DOT hazard segregation.** A scanned item's hazard class must be compatible with every already-scanned item's hazard class, per a class-level 49 CFR §177.848-derived matrix. An unclassified item (hazard class 0) never triggers or blocks this — fail-open. | `Package.ScanItemWithClass` → `pack.IsSegregationIncompatible` | `pack.ErrPackageSegregationViolation` | `409` |
 
 P5 is worth dwelling on: a diverted package is **not an error**. It is a
 successful weigh-check with a negative result, so `POST /packages/{id}/slam`
@@ -183,3 +191,56 @@ Queue depth is computed from task state on every request via
 counter field on any aggregate, and nothing to keep in sync. The same applies
 to any future throughput metric: derive it from the events, do not store it on
 the thing the events are about.
+
+## Product-classification-derived handling flags
+
+Two flags carry product-classification information from upstream, added on
+`Task` and `Package` respectively — neither is a new aggregate, and neither
+changes an existing invariant:
+
+- **`Task.Fragile()`** — set once at construction (`task.New`, threaded
+  through `CreateTask`), stamped by `wes-work-planning` at release time from
+  `inventory-storage`'s `ProductClassification` concept. It does not gate
+  `Claim` — a fragile task claims exactly like any other, on capabilities
+  alone.
+- **`Package.FragileHandling()`** — set once at construction (`pack.New`),
+  derived by `SealPackage` from the owning task's `Fragile` flag rather than
+  accepted as a separate caller-supplied argument. This keeps the derivation
+  in one place: the flag rides in on the Task the same way CPT and
+  `requiredCapabilities` already do, and `SealPackage` — which already loads
+  the Task to validate claim ownership — reads it off that same load.
+
+Hazmat handling needed **no structural change**: `requiredCapabilities`
+already accepts arbitrary capability strings, `Task.Claim`'s
+`CapabilitySet.HasAll` check already enforces them, and `RegisterStation`
+already accepts arbitrary capabilities for a station. `hazmat` is simply
+documented as a known value in the [ubiquitous
+language](../business-context/ubiquitous-language.md) — the mechanism
+already existed. See [ADR-0009](../adr/0009-fragile-and-hazmat-handling-flags.md)
+for the full reasoning.
+
+## Live per-item DOT hazard classification, segregation, and `SortLane`
+
+A second, later addition ([ADR-0010](../adr/0010-package-segregation-and-sort-lane.md))
+extends `Package` further, for a concern `Task.Fragile()`'s release-time
+stamping pattern does not fit: a Pack task's scanned contents are
+discovered live at the scan station, not known when the task was
+released, so the per-SKU DOT hazard class of each scanned item is looked
+up **live, synchronously, per SKU** inside `SealPackage` — via the new
+`ports.ProductClassificationLookup` outbound port, permissive-by-default —
+rather than stamped on `Task` upstream.
+
+- **`Package.ScannedHazardClasses()`** — the DOT hazard class (1-9)
+  recorded for each already-scanned item that came back Hazmat-classified
+  from the lookup. Checked via `pack.IsSegregationIncompatible` against
+  every prior scanned item's class before appending — invariant P6 above.
+- **`Package.SortLane()`** — derived, not stored: `HAZMAT_LANE` if any
+  scanned item carried a hazard class, else `FRAGILE_NO_TILT` if
+  `FragileHandling()`, else `STANDARD`. Computed on every call from the
+  two inputs above, so it can never drift from them.
+
+`SealPackage`'s per-item lookup fails open for a single SKU's transport
+error (that SKU is treated as unclassified, the rest of the seal
+proceeds) — a deliberate asymmetry with `inventory-storage`'s `StowStock`,
+which fails closed for a *classified* SKU's placement-lookup error. See
+ADR-0010 for the full reasoning on both points.

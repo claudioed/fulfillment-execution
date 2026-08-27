@@ -13,17 +13,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/productclassification"
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
 // workReleasedTopic is the topic wes-work-planning publishes WorkReleased
@@ -40,6 +40,40 @@ func main() {
 func run() error {
 	logger := newLogger(getenv("LOG_LEVEL", "info"))
 	slog.SetDefault(logger)
+
+	// Telemetry comes up right after the logger and before any adapter, so
+	// everything built below is instrumented. An unreachable Collector is
+	// not fatal: the OTLP exporters dial lazily, so the service starts and
+	// serves normally with telemetry dropped on the floor.
+	rootCtx := context.Background()
+	serviceName := observability.ServiceName()
+	otelShutdown, err := observability.Setup(rootCtx, serviceName, observability.ServiceVersion(), observability.Endpoint())
+	if err != nil {
+		logger.Error("opentelemetry setup degraded", "error", err)
+	}
+	if otelShutdown != nil {
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := otelShutdown(ctx); err != nil {
+				logger.Error("opentelemetry shutdown failed", "error", err)
+			}
+		}()
+	} else {
+		logger.Warn("opentelemetry disabled; traces and metrics will not be exported")
+	}
+	logger.Info("telemetry configured",
+		"service_name", serviceName,
+		"service_version", observability.ServiceVersion(),
+		"otlp_endpoint", observability.Endpoint(),
+	)
+
+	metrics, err := observability.NewMetrics()
+	if err != nil {
+		// A missing counter must not stop the service from doing work.
+		logger.Error("task metrics unavailable", "error", err)
+		metrics = nil
+	}
 
 	httpAddr := getenv("HTTP_ADDR", ":8080")
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -62,11 +96,14 @@ func run() error {
 		if err := postgres.Migrate(databaseURL, "migrations"); err != nil {
 			return err
 		}
-		pool, err := pgxpool.New(context.Background(), databaseURL)
+		pool, err := postgres.NewPool(rootCtx, databaseURL)
 		if err != nil {
 			return err
 		}
 		defer pool.Close()
+		if err := postgres.RecordPoolStats(pool); err != nil {
+			logger.Error("pgxpool metrics unavailable", "error", err)
+		}
 		taskRepo = postgres.NewTaskRepo(pool)
 		stationRepo = postgres.NewStationRepo(pool)
 		packageRepo = postgres.NewPackageRepo(pool)
@@ -76,24 +113,30 @@ func run() error {
 	var (
 		publisher      ports.EventPublisher
 		kafkaPublisher *outboundkafka.Publisher
+		analyticsPub   *outboundkafka.AnalyticsPublisher
 	)
 	if getenv("EVENT_PUBLISHER", "log") == "kafka" {
-		logger.Info("event publisher configured", "publisher", "kafka", "topic", outboundkafka.Topic, "brokers", kafkaBrokers)
+		logger.Info("event publisher configured", "publisher", "kafka", "topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", kafkaBrokers)
 		kafkaPublisher = outboundkafka.NewPublisher(kafkaBrokers, taskRepo, uuidLike)
-		publisher = kafkaPublisher
+		analyticsPub = outboundkafka.NewAnalyticsPublisher(kafkaBrokers, taskRepo, uuidLike)
+		// Fan every domain event to BOTH the integration topic and the
+		// dedicated analytics topic (ADR-0012). The analytics stream feeds
+		// the projector; the integration stream is unchanged.
+		publisher = events.NewMultiPublisher(kafkaPublisher, analyticsPub)
 	} else {
 		publisher = events.NewLogPublisher(logger)
 	}
 	clock := memory.SystemClock{}
+	classificationLookup := buildClassificationLookup(getenv("PRODUCT_CLASSIFICATION_MODE", "permissive"), os.Getenv("INVENTORY_STORAGE_BASE_URL"), logger)
 
 	createTask := &usecases.CreateTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId}
 
 	handlers := &inboundhttp.Handlers{
 		CreateTask:      createTask,
-		ClaimNext:       &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock},
+		ClaimNext:       &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
 		RenewLease:      &usecases.RenewLease{Tasks: taskRepo, Clock: clock},
-		CompleteTask:    &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock},
-		SealPackage:     &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId},
+		CompleteTask:    &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
+		SealPackage:     &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId, ClassificationLookup: classificationLookup},
 		RunSlam:         &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock},
 		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: taskRepo},
 		ExpireLeases:    &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock},
@@ -107,6 +150,9 @@ func run() error {
 	defer func() { _ = consumer.Close() }()
 	if kafkaPublisher != nil {
 		defer func() { _ = kafkaPublisher.Close() }()
+	}
+	if analyticsPub != nil {
+		defer func() { _ = analyticsPub.Close() }()
 	}
 
 	go func() {
@@ -135,9 +181,22 @@ func run() error {
 	return srv.Shutdown(ctx)
 }
 
+// metricsPort converts a possibly-nil *observability.Metrics into a
+// ports.Metrics, avoiding the typed-nil trap: assigning a nil *Metrics
+// straight into the interface field would produce a non-nil interface whose
+// method calls panic, defeating the use cases' nil check.
+func metricsPort(m *observability.Metrics) ports.Metrics {
+	if m == nil {
+		return nil
+	}
+	return m
+}
+
 // newLogger builds a JSON slog.Logger writing to stdout, with its minimum
 // level set from a LOG_LEVEL value (debug|info|warn|warning|error,
-// case-insensitive, defaulting to info for anything else).
+// case-insensitive, defaulting to info for anything else). The JSON handler
+// is wrapped so records logged with a context carrying an active span also
+// carry that span's trace_id and span_id.
 func newLogger(level string) *slog.Logger {
 	var lvl slog.Level
 	switch strings.ToLower(level) {
@@ -150,7 +209,9 @@ func newLogger(level string) *slog.Logger {
 	default:
 		lvl = slog.LevelInfo
 	}
-	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}))
+	return slog.New(observability.NewSlogHandler(
+		slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: lvl}),
+	))
 }
 
 func getenv(key, fallback string) string {
@@ -158,6 +219,21 @@ func getenv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// buildClassificationLookup selects the outbound
+// ports.ProductClassificationLookup adapter via PRODUCT_CLASSIFICATION_MODE
+// (http|permissive), defaulting to "permissive" so existing tests, CI and
+// deployments that do not set the env var are unaffected — mirrors
+// inventory-storage's own LOCATION_LOOKUP_MODE=http|permissive pattern for
+// its facilitylayout adapter (see ADR-0010). "http" requires
+// INVENTORY_STORAGE_BASE_URL.
+func buildClassificationLookup(mode, inventoryStorageBaseURL string, logger *slog.Logger) ports.ProductClassificationLookup {
+	if !strings.EqualFold(mode, "http") {
+		return productclassification.NewPermissiveLookup()
+	}
+	logger.Info("product classification lookup configured", "mode", "http", "inventory_storage_base_url", inventoryStorageBaseURL)
+	return productclassification.NewClient(inventoryStorageBaseURL, nil)
 }
 
 func newTaskId() shared.TaskId {

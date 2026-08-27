@@ -8,3 +8,8 @@ data:
   HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
   EVENT_PUBLISHER: {{ .Values.config.eventPublisher | quote }}
   KAFKA_BROKERS: {{ .Values.kafka.brokers | quote }}
+  {{- if .Values.otel.enabled }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
+  OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}
+  ENVIRONMENT: {{ .Values.environment | quote }}
+  {{- end }}

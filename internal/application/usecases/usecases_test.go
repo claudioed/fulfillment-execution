@@ -8,6 +8,7 @@ import (
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
+	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
@@ -47,7 +48,7 @@ func TestCreateTask_PutsTaskInPool(t *testing.T) {
 	h := newHarness()
 	uc := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
 
-	tk, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	tk, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -64,6 +65,73 @@ func TestCreateTask_PutsTaskInPool(t *testing.T) {
 	}
 }
 
+// CreateTask threads the fragile flag straight through to task.New — it is
+// a packing hint sourced from wes-work-planning, not derived here.
+func TestCreateTask_ThreadsFragileFlagThrough(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+
+	tk, err := uc.Execute(context.Background(), task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !tk.Fragile() {
+		t.Fatalf("expected the created task to carry Fragile() == true")
+	}
+
+	got, _ := h.tasks.FindById(context.Background(), tk.Id())
+	if got == nil || !got.Fragile() {
+		t.Fatalf("expected the persisted task to carry Fragile() == true, got %+v", got)
+	}
+}
+
+func TestCreateTask_FragileDefaultsFalse(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+
+	tk, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tk.Fragile() {
+		t.Fatalf("expected Fragile() == false when not requested")
+	}
+}
+
+// CreateTask threads the gift-wrap flag straight through to task.New — it
+// is a caller-stated request sourced from wes-work-planning, not derived
+// here (see ADR-0011).
+func TestCreateTask_ThreadsGiftWrapFlagThrough(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+
+	tk, err := uc.Execute(context.Background(), task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !tk.GiftWrap() {
+		t.Fatalf("expected the created task to carry GiftWrap() == true")
+	}
+
+	got, _ := h.tasks.FindById(context.Background(), tk.Id())
+	if got == nil || !got.GiftWrap() {
+		t.Fatalf("expected the persisted task to carry GiftWrap() == true, got %+v", got)
+	}
+}
+
+func TestCreateTask_GiftWrapDefaultsFalse(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+
+	tk, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tk.GiftWrap() {
+		t.Fatalf("expected GiftWrap() == false when not requested")
+	}
+}
+
 func TestClaimNext_SelectsEarliestCPTMatchingCapabilities(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
@@ -72,8 +140,8 @@ func TestClaimNext_SelectsEarliestCPTMatchingCapabilities(t *testing.T) {
 	// A later-CPT task that matches, and an earlier-CPT task requiring a
 	// capability the station lacks — ClaimNext must skip it and take the
 	// best-fit match, not merely the earliest CPT overall.
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(30*time.Minute)), "order-hazmat", shared.NewCapabilitySet("pick", "hazmat"))
-	wantTask, _ := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(30*time.Minute)), "order-hazmat", shared.NewCapabilitySet("pick", "hazmat"), false, false)
+	wantTask, _ := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 
@@ -108,7 +176,7 @@ func TestClaimNext_AtMostOnce_SecondStationCannotClaimSameTask(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 	_ = h.stations.Save(ctx, station.New("s2", shared.NewCapabilitySet("pick")))
@@ -134,7 +202,7 @@ func TestClaimNext_ExpiredLeaseReturnsTaskToPool(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 	_ = h.stations.Save(ctx, station.New("s2", shared.NewCapabilitySet("pick")))
@@ -160,7 +228,7 @@ func TestExpireLeases_SweepsExpiredClaimsBackToPending(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	tk, _ := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	tk, _ := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, LeaseDuration: time.Minute}
@@ -187,7 +255,7 @@ func TestRenewLease_ExtendsClaim(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, LeaseDuration: time.Minute}
@@ -209,7 +277,7 @@ func TestCompleteTask_ValidatesOwnershipAndCompletes(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
@@ -235,7 +303,7 @@ func TestSealPackageAndRunSlam_LabelsWithinTolerance(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
 
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
@@ -258,13 +326,140 @@ func TestSealPackageAndRunSlam_LabelsWithinTolerance(t *testing.T) {
 	}
 }
 
+// SealPackage derives Package.FragileHandling from the owning task's
+// Fragile flag rather than accepting it as a separate caller-supplied
+// argument — the flag rides in on the Task (stamped by wes-work-planning at
+// release time), not the seal-package request.
+func TestSealPackage_DerivesFragileHandlingFromTask(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), true, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+	if !claimed.Fragile() {
+		t.Fatalf("expected the claimed task to carry Fragile() == true")
+	}
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.FragileHandling() {
+		t.Fatalf("expected the sealed package to carry FragileHandling() == true, derived from the task")
+	}
+
+	got, _ := h.packages.FindById(ctx, p.Id())
+	if got == nil || !got.FragileHandling() {
+		t.Fatalf("expected the persisted package to carry FragileHandling() == true, got %+v", got)
+	}
+}
+
+func TestSealPackage_NonFragileTaskProducesNonFragilePackage(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.FragileHandling() {
+		t.Fatalf("expected FragileHandling() == false when the task was not fragile")
+	}
+}
+
+// SealPackage derives Package.GiftWrapRequested from the owning task's
+// GiftWrap flag rather than accepting it as a separate caller-supplied
+// argument — the flag rides in on the Task (stamped by wes-work-planning
+// from a caller-stated WorkReleased.data.gift_wrap request), not the
+// seal-package request (see ADR-0011).
+func TestSealPackage_DerivesGiftWrapRequestedFromTask(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, true)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+	if !claimed.GiftWrap() {
+		t.Fatalf("expected the claimed task to carry GiftWrap() == true")
+	}
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.GiftWrapRequested() {
+		t.Fatalf("expected the sealed package to carry GiftWrapRequested() == true, derived from the task")
+	}
+
+	got, _ := h.packages.FindById(ctx, p.Id())
+	if got == nil || !got.GiftWrapRequested() {
+		t.Fatalf("expected the persisted package to carry GiftWrapRequested() == true, got %+v", got)
+	}
+}
+
+func TestSealPackage_NonGiftWrapTaskProducesNonGiftWrapPackage(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.GiftWrapRequested() {
+		t.Fatalf("expected GiftWrapRequested() == false when the task was not gift-wrap requested")
+	}
+}
+
+// Fragile and GiftWrap are independently derived onto Package at seal
+// time — one being true must not affect the other (no merged flag).
+func TestSealPackage_FragileAndGiftWrapAreIndependentlyDerived(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), true, true)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !p.FragileHandling() || !p.GiftWrapRequested() {
+		t.Fatalf("expected both FragileHandling() and GiftWrapRequested() to be true, got %v/%v", p.FragileHandling(), p.GiftWrapRequested())
+	}
+}
+
 func TestGetQueueDepth_CountsPendingTasksOfType(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(2*time.Hour)), "order-2", shared.NewCapabilitySet("pick"))
-	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-3", shared.NewCapabilitySet("pack"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(2*time.Hour)), "order-2", shared.NewCapabilitySet("pick"), false, false)
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-3", shared.NewCapabilitySet("pack"), false, false)
 
 	depth := &usecases.GetQueueDepth{Tasks: h.tasks}
 	got, err := depth.Execute(ctx, task.Pick)
@@ -324,7 +519,7 @@ func TestCreateTask_PropagatesSaveError(t *testing.T) {
 	tasks.failSave = true
 	uc := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
 
-	_, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	if !errors.Is(err, errFake) {
 		t.Fatalf("expected save error to propagate, got %v", err)
 	}
@@ -334,7 +529,7 @@ func TestCreateTask_PropagatesPublishError(t *testing.T) {
 	h := newHarness()
 	uc := &usecases.CreateTask{Tasks: h.tasks, Publisher: &errPublisher{fail: true}, Clock: h.clock, NewId: idSeq("t")}
 
-	_, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, err := uc.Execute(context.Background(), task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	if !errors.Is(err, errFake) {
 		t.Fatalf("expected publish error to propagate, got %v", err)
 	}
@@ -372,7 +567,7 @@ func TestClaimNext_PropagatesSaveError(t *testing.T) {
 	ctx := context.Background()
 	tasks := newErrTaskRepo()
 	create := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 
 	tasks.failSave = true
@@ -387,7 +582,7 @@ func TestClaimNext_PropagatesPublishError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: &errPublisher{fail: true}, Clock: h.clock}
@@ -423,7 +618,7 @@ func TestCompleteTask_PropagatesSaveError(t *testing.T) {
 	ctx := context.Background()
 	tasks := newErrTaskRepo()
 	create := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 	claim := &usecases.ClaimNext{Tasks: tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
 	claimed, _ := claim.Execute(ctx, "s1", task.Pick)
@@ -440,7 +635,7 @@ func TestCompleteTask_PropagatesPublishError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
 	claimed, _ := claim.Execute(ctx, "s1", task.Pick)
@@ -469,7 +664,7 @@ func TestExpireLeases_PropagatesSaveError(t *testing.T) {
 	ctx := context.Background()
 	tasks := newErrTaskRepo()
 	create := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 	claim := &usecases.ClaimNext{Tasks: tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, LeaseDuration: time.Minute}
 	_, _ = claim.Execute(ctx, "s1", task.Pick)
@@ -487,7 +682,7 @@ func TestExpireLeases_PropagatesPublishError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, LeaseDuration: time.Minute}
 	_, _ = claim.Execute(ctx, "s1", task.Pick)
@@ -535,7 +730,7 @@ func TestRenewLease_PropagatesSaveError(t *testing.T) {
 	ctx := context.Background()
 	tasks := newErrTaskRepo()
 	create := &usecases.CreateTask{Tasks: tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 	claim := &usecases.ClaimNext{Tasks: tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, LeaseDuration: time.Minute}
 	claimed, _ := claim.Execute(ctx, "s1", task.Pick)
@@ -552,7 +747,7 @@ func TestRenewLease_PropagatesDomainError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
 	claimed, _ := claim.Execute(ctx, "s1", task.Pick)
@@ -586,7 +781,7 @@ func TestRunSlam_ReturnsErrPackageNotFound(t *testing.T) {
 func TestRunSlam_PropagatesWeighError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
-	p := pack.New("p1", "order-1")
+	p := pack.New("p1", "order-1", false, false)
 	_ = h.packages.Save(ctx, p)
 
 	slam := &usecases.RunSlam{Packages: h.packages, Publisher: h.publisher, Clock: h.clock}
@@ -599,7 +794,7 @@ func TestRunSlam_PropagatesWeighError(t *testing.T) {
 func TestRunSlam_PropagatesSaveError(t *testing.T) {
 	ctx := context.Background()
 	packages := newErrPackageRepo()
-	p := pack.New("p1", "order-1")
+	p := pack.New("p1", "order-1", false, false)
 	_ = p.ScanItem("sku-1")
 	_ = p.Seal()
 	_ = packages.Save(ctx, p)
@@ -615,7 +810,7 @@ func TestRunSlam_PropagatesSaveError(t *testing.T) {
 func TestRunSlam_PropagatesPublishError_LabelApplied(t *testing.T) {
 	ctx := context.Background()
 	packages := memory.NewPackageRepo()
-	p := pack.New("p1", "order-1")
+	p := pack.New("p1", "order-1", false, false)
 	_ = p.ScanItem("sku-1")
 	_ = p.Seal()
 	_ = packages.Save(ctx, p)
@@ -630,7 +825,7 @@ func TestRunSlam_PropagatesPublishError_LabelApplied(t *testing.T) {
 func TestRunSlam_PropagatesPublishError_Diverted(t *testing.T) {
 	ctx := context.Background()
 	packages := memory.NewPackageRepo()
-	p := pack.New("p1", "order-1")
+	p := pack.New("p1", "order-1", false, false)
 	_ = p.ScanItem("sku-1")
 	_ = p.Seal()
 	_ = packages.Save(ctx, p)
@@ -665,7 +860,7 @@ func TestSealPackage_ReturnsErrWrongTaskType(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	tk, _ := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"))
+	tk, _ := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
 
 	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
 	_, err := seal.Execute(ctx, tk.Id(), "s1", []string{"sku-1"})
@@ -678,7 +873,7 @@ func TestSealPackage_ReturnsErrNotOwnerWhenUnclaimed(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	tk, _ := create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	tk, _ := create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
 
 	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
 	_, err := seal.Execute(ctx, tk.Id(), "s1", []string{"sku-1"})
@@ -691,7 +886,7 @@ func TestSealPackage_ReturnsErrNotOwnerForNonOwningStation(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
 	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
@@ -707,7 +902,7 @@ func TestSealPackage_PropagatesSealError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
 	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
@@ -723,7 +918,7 @@ func TestSealPackage_PropagatesSaveError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
 	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
@@ -741,7 +936,7 @@ func TestSealPackage_PropagatesPublishError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
 	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
-	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"))
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
 	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
 	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
 	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
@@ -750,6 +945,146 @@ func TestSealPackage_PropagatesPublishError(t *testing.T) {
 	_, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
 	if !errors.Is(err, errFake) {
 		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
+// --- ClassificationLookup: live per-scanned-item DOT hazard segregation (ADR-0010) ---
+
+// A SealPackage built with no ClassificationLookup (as every test above
+// does) must behave exactly as before this feature — permissive by
+// construction, no segregation check ever runs.
+func TestSealPackage_NilClassificationLookup_BehavesLikeBeforeThisFeature(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1", "sku-2"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := p.SortLane(); got != pack.SortLaneStandard {
+		t.Fatalf("expected STANDARD sort lane with no classification lookup wired, got %s", got)
+	}
+}
+
+// Two hazmat-classified items whose DOT hazard classes ARE compatible per
+// the segregation matrix must both seal successfully into one package and
+// drive SortLane() to HAZMAT_LANE.
+func TestSealPackage_HazmatClassifiedItemsCompatible_Pass(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	lookup := newFakeClassificationLookup()
+	lookup.bySKU["sku-class-3"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 3}
+	lookup.bySKU["sku-class-9"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 9}
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }, ClassificationLookup: lookup}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-class-3", "sku-class-9"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := p.SortLane(); got != pack.SortLaneHazmat {
+		t.Fatalf("expected HAZMAT_LANE, got %s", got)
+	}
+	if len(p.ScannedHazardClasses()) != 2 {
+		t.Fatalf("expected both hazard classes recorded, got %v", p.ScannedHazardClasses())
+	}
+}
+
+// Two hazmat-classified items whose DOT hazard classes are INCOMPATIBLE
+// must reject the whole seal with ErrPackageSegregationViolation, and the
+// package must not be persisted.
+func TestSealPackage_HazmatClassifiedItemsIncompatible_Reject(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	lookup := newFakeClassificationLookup()
+	lookup.bySKU["sku-class-1"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 1}
+	lookup.bySKU["sku-class-3"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 3}
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }, ClassificationLookup: lookup}
+	_, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-class-1", "sku-class-3"})
+	if !errors.Is(err, pack.ErrPackageSegregationViolation) {
+		t.Fatalf("expected ErrPackageSegregationViolation, got %v", err)
+	}
+
+	got, _ := h.packages.FindById(ctx, "p1")
+	if got != nil {
+		t.Fatalf("expected the package to NOT be persisted after a segregation violation, got %+v", got)
+	}
+}
+
+// A SKU the lookup reports Known=false (or plain unregistered) never
+// triggers or blocks segregation — fail-open, and the item seals normally.
+func TestSealPackage_UnclassifiedItems_FailOpen(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	lookup := newFakeClassificationLookup()
+	lookup.bySKU["sku-class-1"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 1}
+	// sku-unclassified is never registered in lookup.bySKU -> Known: false.
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }, ClassificationLookup: lookup}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-class-1", "sku-unclassified"})
+	if err != nil {
+		t.Fatalf("expected the unclassified item to fail open (no rejection), got %v", err)
+	}
+	if len(p.ScannedContents()) != 2 {
+		t.Fatalf("expected both items scanned, got %v", p.ScannedContents())
+	}
+	if len(p.ScannedHazardClasses()) != 1 {
+		t.Fatalf("expected only the classified item's hazard class recorded, got %v", p.ScannedHazardClasses())
+	}
+}
+
+// A single SKU's lookup transport error fails open for that SKU only — the
+// rest of the seal proceeds normally rather than aborting the whole call.
+func TestSealPackage_SingleSKULookupTransportError_FailsOpenForThatItemOnly(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	lookup := newFakeClassificationLookup()
+	lookup.bySKU["sku-class-3"] = ports.ClassificationInfo{Known: true, Hazmat: true, DOTHazardClass: 3}
+	lookup.failFor["sku-flaky"] = true
+
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return "p1" }, ClassificationLookup: lookup}
+	p, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-class-3", "sku-flaky"})
+	if err != nil {
+		t.Fatalf("expected the whole seal to succeed despite one SKU's lookup error, got %v", err)
+	}
+	if len(p.ScannedContents()) != 2 {
+		t.Fatalf("expected both items scanned despite the lookup error, got %v", p.ScannedContents())
+	}
+	if len(p.ScannedHazardClasses()) != 1 {
+		t.Fatalf("expected only the successfully-classified item's hazard class recorded, got %v", p.ScannedHazardClasses())
+	}
+	if len(lookup.calls) != 2 {
+		t.Fatalf("expected both SKUs to be looked up, got %v", lookup.calls)
 	}
 }
 
@@ -770,7 +1105,7 @@ func TestRegisterStation_ThenClaimNextSucceeds(t *testing.T) {
 	if _, err := register.Execute(ctx, "s1", []string{"pick"}); err != nil {
 		t.Fatalf("unexpected error registering station: %v", err)
 	}
-	if _, err := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick")); err != nil {
+	if _, err := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false); err != nil {
 		t.Fatalf("unexpected error creating task: %v", err)
 	}
 
@@ -780,5 +1115,67 @@ func TestRegisterStation_ThenClaimNextSucceeds(t *testing.T) {
 	}
 	if got.Status() != task.Claimed {
 		t.Fatalf("expected Claimed, got %s", got.Status())
+	}
+}
+
+// TestClaimNext_CountsTheClaimedTaskByType and its CompleteTask counterpart
+// pin the business metric to the real domain event -- the moment the task is
+// actually leased/completed -- rather than to an HTTP request that may not
+// have led to either.
+func TestClaimNext_CountsTheClaimedTaskByType(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+
+	metrics := &recordingMetrics{}
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, Metrics: metrics}
+
+	if _, err := claim.Execute(ctx, "s1", task.Pack); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(metrics.claimed) != 1 || metrics.claimed[0] != task.Pack {
+		t.Fatalf("claimed counter recorded %v, want one Pack", metrics.claimed)
+	}
+
+	// A claim that finds nothing must not count.
+	if _, err := claim.Execute(ctx, "s1", task.Pack); err == nil {
+		t.Fatal("expected ErrNoClaimableTask on an empty pool")
+	}
+	if len(metrics.claimed) != 1 {
+		t.Errorf("a failed claim was counted: %v", metrics.claimed)
+	}
+}
+
+func TestCompleteTask_CountsTheCompletedTaskByType(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Slam, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("slam"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("slam")))
+
+	metrics := &recordingMetrics{}
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock, Metrics: metrics}
+	claimed, err := claim.Execute(ctx, "s1", task.Slam)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	complete := &usecases.CompleteTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, Metrics: metrics}
+
+	// A rejected completion must not count.
+	if err := complete.Execute(ctx, claimed.Id(), "wrong-station"); err == nil {
+		t.Fatal("expected ownership validation to reject a non-owning station")
+	}
+	if len(metrics.completed) != 0 {
+		t.Fatalf("a rejected completion was counted: %v", metrics.completed)
+	}
+
+	if err := complete.Execute(ctx, claimed.Id(), "s1"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(metrics.completed) != 1 || metrics.completed[0] != task.Slam {
+		t.Fatalf("completed counter recorded %v, want one Slam", metrics.completed)
 	}
 }

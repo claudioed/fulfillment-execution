@@ -98,6 +98,7 @@ paths:
               cpt: "2026-01-01T18:00:00Z"
               orderRef: order-42
               requiredCapabilities: [pick]
+              fragile: false
       responses:
         "201":
           description: Task created and placed in the pending pool.
@@ -118,6 +119,7 @@ paths:
                 cpt: "2026-01-01T18:00:00Z"
                 orderRef: order-42
                 requiredCapabilities: [pick]
+                fragile: false
         "400":
           $ref: "#/components/responses/BadRequestNoInstance"
         "500":
@@ -219,6 +221,7 @@ paths:
                 cpt: "2026-01-01T18:00:00Z"
                 orderRef: order-42
                 requiredCapabilities: [pick]
+                fragile: false
                 leaseStationId: station-1
                 leaseExpiry: "2026-01-01T12:05:00Z"
         "400":
@@ -426,6 +429,8 @@ paths:
                 orderRef: order-42
                 status: SEALED
                 scannedContents: [sku-1, sku-2]
+                fragileHandling: false
+                sortLane: STANDARD
         "400":
           $ref: "#/components/responses/BadRequest"
         "404":
@@ -442,9 +447,17 @@ paths:
                 instance: /tasks/20260101T120100.000000000/seal-package
         "409":
           description: >
-            `stationId` does not hold the active claim on this task (either
-            it was never claimed by this station, or the claim/lease is no
-            longer active).
+            Either `stationId` does not hold the active claim on this task
+            (it was never claimed by this station, or the claim/lease is no
+            longer active — `task-not-owner`), or a scanned item's live DOT
+            hazard classification lookup found it incompatible — per the
+            class-level 49 CFR §177.848-derived segregation matrix — with an
+            item already scanned into this same package
+            (`package-segregation-violation`, see
+            [ADR-0010](/docs/adr/0010-package-segregation-and-sort-lane)).
+            The segregation check only runs when the deployment has
+            `PRODUCT_CLASSIFICATION_MODE=http` configured; the default
+            permissive mode never rejects on this basis.
           content:
             application/problem+json:
               schema:
@@ -684,6 +697,20 @@ components:
       enum: [OPEN, SEALED, LABELED, DIVERTED]
       example: SEALED
 
+    SortLane:
+      type: string
+      description: >
+        Package's derived WES-tier sortation routing decision (see
+        [ADR-0010](/docs/adr/0010-package-segregation-and-sort-lane)):
+        `HAZMAT_LANE` if any scanned item carried a DOT hazard class from
+        the live per-scanned-item classification lookup, else
+        `FRAGILE_NO_TILT` if `fragileHandling` is true, else `STANDARD`.
+        A decision only — no WCS device/conveyor integration exists in
+        this service; a real WCS system would consume this value as its
+        own inbound fact.
+      enum: [HAZMAT_LANE, FRAGILE_NO_TILT, STANDARD]
+      example: STANDARD
+
     CreateTaskRequest:
       type: object
       required: [type, cpt, orderRef, requiredCapabilities]
@@ -704,16 +731,33 @@ components:
           example: order-42
         requiredCapabilities:
           type: array
-          description: Capabilities a claiming station's capability set must be a superset of.
+          description: >
+            Capabilities a claiming station's capability set must be a
+            superset of. This is an open, freeform list of strings, not a
+            closed enum — known values in active use include `pick`,
+            `pack`, `slam`, and `hazmat` (hazmat is matched by the same
+            generic capability-set mechanism as any other value; no special
+            handling exists or is needed for it).
           minItems: 1
           items:
             type: string
             example: pick
+        fragile:
+          type: boolean
+          default: false
+          description: >
+            A packing hint, not a placement or capability-matching signal:
+            true if this task's upstream order line was classified Fragile
+            by inventory-storage's ProductClassification concept, as
+            stamped onto the WorkReleased event by wes-work-planning at
+            release time. Optional and defaults to false for backward
+            compatibility with any producer that predates this field.
       example:
         type: PICK
         cpt: "2026-01-01T18:00:00Z"
         orderRef: order-42
         requiredCapabilities: [pick]
+        fragile: false
 
     TaskResponse:
       type: object
@@ -738,6 +782,22 @@ components:
           items:
             type: string
           example: [pick]
+        fragile:
+          type: boolean
+          description: >
+            Packing hint carried from task creation — see
+            CreateTaskRequest.fragile. Does not affect claiming.
+          example: false
+        giftWrap:
+          type: boolean
+          description: >
+            Read-only packing hint: true if this task's order was flagged
+            for gift wrap at work-enqueue time. Unlike fragile, it has no
+            HTTP ingestion path — it arrives only via
+            WorkReleased.data.gift_wrap (see ADR-0011) and cannot be set
+            through POST /tasks. Does not affect claiming or capability
+            matching.
+          example: false
         leaseStationId:
           type: string
           nullable: true
@@ -820,6 +880,26 @@ components:
           items:
             type: string
           example: [sku-1, sku-2]
+        fragileHandling:
+          type: boolean
+          description: >
+            Derived at seal time from the owning Pack task's `fragile`
+            flag (not an independent input to seal-package) — true if any
+            of the package's scanned/sealed contents came from an order
+            line classified Fragile upstream.
+          example: false
+        giftWrapRequested:
+          type: boolean
+          description: >
+            Derived at seal time from the owning Pack task's `giftWrap`
+            flag (not an independent input to seal-package, and not
+            restated by the station) — true if the order this package
+            fulfils was flagged for gift wrap at work-enqueue time. Unlike
+            hazmat, this is a packing concern only: it does not gate which
+            station may fulfil the order (see ADR-0011).
+          example: false
+        sortLane:
+          $ref: "#/components/schemas/SortLane"
 
     RunSlamRequest:
       type: object
