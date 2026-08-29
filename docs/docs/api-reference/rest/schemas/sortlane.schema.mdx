@@ -1,0 +1,33 @@
+---
+id: sortlane
+title: "SortLane"
+description: "Package's derived WES-tier sortation routing decision (see [ADR-0010](/docs/adr/0010-package-segregation-and-sort-lane)): `HAZMAT_LANE` if any scanned item carried a DOT hazard class from the live per-scanned-item classification lookup, else `FRAGILE_NO_TILT` if `fragileHandling` is true, else `STANDARD`. A decision only — no WCS device/conveyor integration exists in this service; a real WCS system would consume this value as its own inbound fact."
+sidebar_label: "SortLane"
+hide_title: true
+hide_table_of_contents: true
+schema: true
+sample: "STANDARD"
+custom_edit_url: null
+---
+
+import Schema from "@theme/Schema";
+import Heading from "@theme/Heading";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"SortLane"}
+>
+</Heading>
+
+
+
+Package's derived WES-tier sortation routing decision (see [ADR-0010](/docs/adr/0010-package-segregation-and-sort-lane)): `HAZMAT_LANE` if any scanned item carried a DOT hazard class from the live per-scanned-item classification lookup, else `FRAGILE_NO_TILT` if `fragileHandling` is true, else `STANDARD`. A decision only — no WCS device/conveyor integration exists in this service; a real WCS system would consume this value as its own inbound fact.
+
+
+<Schema
+  {...require("./sortlane.Schema.json")}
+>
+  
+</Schema>
+            
