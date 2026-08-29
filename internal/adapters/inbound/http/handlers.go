@@ -27,6 +27,8 @@ type Handlers struct {
 	ExpireLeases       *usecases.ExpireLeases
 	RegisterStation    *usecases.RegisterStation
 	GetTasksByOrderRef *usecases.GetTasksByOrderRef
+	CheckInStation     *usecases.CheckInStation
+	CheckOutStation    *usecases.CheckOutStation
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
@@ -273,4 +275,37 @@ func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
 // GetHealthz handles GET /healthz.
 func (h *Handlers) GetHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+// PostCheckInStation handles POST /stations/{stationId}/check-in.
+func (h *Handlers) PostCheckInStation(w http.ResponseWriter, r *http.Request) {
+	stationId := chi.URLParam(r, "stationId")
+	var req checkInStationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequest(w, r, msg)
+		return
+	}
+
+	s, err := h.CheckInStation.Execute(r.Context(), shared.StationId(stationId), station.OccupantId(req.OccupantId))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toStationResponse(s))
+}
+
+// PostCheckOutStation handles POST /stations/{stationId}/check-out.
+func (h *Handlers) PostCheckOutStation(w http.ResponseWriter, r *http.Request) {
+	stationId := chi.URLParam(r, "stationId")
+
+	s, err := h.CheckOutStation.Execute(r.Context(), shared.StationId(stationId))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toStationResponse(s))
 }

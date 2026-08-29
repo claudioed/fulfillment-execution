@@ -12,6 +12,7 @@ import (
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
@@ -105,5 +106,116 @@ func TestPublish_IgnoresNonTaskCompletedEvents(t *testing.T) {
 
 	if len(w.msgs) != 0 {
 		t.Fatalf("expected no published messages for TaskCreated, got %d", len(w.msgs))
+	}
+}
+
+// TaskCompleted is enriched with the completing associate's identity
+// (the occupant of the claiming station at publish time) and the task's
+// duration (completion time minus the claim's start time) — see ADR-0014.
+func TestPublish_EnrichesWithAssociateIdAndDurationSeconds(t *testing.T) {
+	tasks := memory.NewTaskRepo()
+	stations := memory.NewStationRepo()
+
+	tk := task.New("task-1", task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	if err := tk.Claim("station-1", shared.NewCapabilitySet("pick"), epoch, 5*time.Minute); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	completedAt := epoch.Add(90 * time.Second)
+	if err := tk.Complete("station-1", completedAt); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if err := tasks.Save(context.Background(), tk); err != nil {
+		t.Fatalf("save task: %v", err)
+	}
+
+	st := station.New("station-1", shared.NewCapabilitySet("pick"))
+	if err := st.CheckIn("worker-42"); err != nil {
+		t.Fatalf("check in: %v", err)
+	}
+	if err := stations.Save(context.Background(), st); err != nil {
+		t.Fatalf("save station: %v", err)
+	}
+
+	w := &fakeWriter{}
+	p := &outboundkafka.Publisher{
+		Writer:   w,
+		Tasks:    tasks,
+		Stations: stations,
+		NewId:    func() string { return "evt-1" },
+	}
+
+	evt := shared.NewTaskCompleted("task-1", "station-1", completedAt)
+	if err := p.Publish(context.Background(), evt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var env outboundkafka.Envelope
+	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Data.AssociateId != "worker-42" {
+		t.Errorf("Data.AssociateId = %q, want %q", env.Data.AssociateId, "worker-42")
+	}
+	if env.Data.DurationSeconds != 90 {
+		t.Errorf("Data.DurationSeconds = %d, want 90", env.Data.DurationSeconds)
+	}
+}
+
+// AssociateId is a soft/optional fact: a station with no checked-in
+// occupant (e.g. a robot) enriches with an empty string, not an error.
+func TestPublish_AssociateIdEmptyWhenStationHasNoOccupant(t *testing.T) {
+	tasks := memory.NewTaskRepo()
+	stations := memory.NewStationRepo()
+
+	tk := task.New("task-1", task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	_ = tk.Claim("station-1", shared.NewCapabilitySet("pick"), epoch, 5*time.Minute)
+	_ = tk.Complete("station-1", epoch.Add(time.Minute))
+	_ = tasks.Save(context.Background(), tk)
+	_ = stations.Save(context.Background(), station.New("station-1", shared.NewCapabilitySet("pick")))
+
+	w := &fakeWriter{}
+	p := &outboundkafka.Publisher{Writer: w, Tasks: tasks, Stations: stations, NewId: func() string { return "evt-1" }}
+
+	evt := shared.NewTaskCompleted("task-1", "station-1", epoch.Add(time.Minute))
+	if err := p.Publish(context.Background(), evt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var env outboundkafka.Envelope
+	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Data.AssociateId != "" {
+		t.Errorf("Data.AssociateId = %q, want empty (no occupant)", env.Data.AssociateId)
+	}
+}
+
+// DurationSeconds is 0 when the task's ClaimedAt is nil (e.g. a task
+// persisted before this field existed) rather than a negative or garbage
+// value.
+func TestPublish_DurationSecondsZeroWhenClaimedAtNil(t *testing.T) {
+	tasks := memory.NewTaskRepo()
+
+	// Rehydrate simulates a pre-migration row: Claimed status but no
+	// recorded claimedAt.
+	lease := &task.Lease{StationId: "station-1", Expiry: epoch.Add(time.Hour)}
+	tk := task.Rehydrate("task-1", task.Pick, task.Claimed, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), lease, false, false, nil)
+	_ = tk.Complete("station-1", epoch.Add(time.Minute))
+	_ = tasks.Save(context.Background(), tk)
+
+	w := &fakeWriter{}
+	p := &outboundkafka.Publisher{Writer: w, Tasks: tasks, NewId: func() string { return "evt-1" }}
+
+	evt := shared.NewTaskCompleted("task-1", "station-1", epoch.Add(time.Minute))
+	if err := p.Publish(context.Background(), evt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var env outboundkafka.Envelope
+	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Data.DurationSeconds != 0 {
+		t.Errorf("Data.DurationSeconds = %d, want 0 when ClaimedAt is nil", env.Data.DurationSeconds)
 	}
 }

@@ -171,7 +171,9 @@ components:
         task. This is the one event currently wired to the outbound Kafka
         adapter, published on topic `warehouse.fulfillment.events` enriched
         with `work_unit_id` (the completed task's order reference) so Work
-        Planning can call RecordCompletion(workUnitId).
+        Planning can call RecordCompletion(workUnitId), plus
+        `associate_id` and `duration_seconds` (see ADR-0014) for the
+        labor-performance bounded context.
 
 
         Kafka message headers carry W3C trace context, so a consumer that
@@ -209,6 +211,8 @@ components:
               taskId: task-8a1f
               stationId: station-03
               workUnitId: wu-8a1f
+              associateId: worker-42
+              durationSeconds: 245
 
     ItemPicked:
       name: ItemPicked
@@ -476,6 +480,26 @@ components:
                     The completed task's order reference, carried as
                     work_unit_id on the wire so Work Planning can correlate
                     this event to the WorkUnit it released.
+                associateId:
+                  type: string
+                  description: >
+                    The occupant checked into the completing station at
+                    publish time (carried as associate_id on the wire), for
+                    the labor-performance bounded context to attribute
+                    completed work to a worker (see ADR-0014). Omitted (or
+                    empty) when the station has no checked-in occupant —
+                    this is an intentionally soft/optional fact, not every
+                    station has one (e.g. a robot station never checks
+                    anyone in).
+                durationSeconds:
+                  type: integer
+                  format: int64
+                  description: >
+                    Elapsed seconds between the task's claim and its
+                    completion (carried as duration_seconds on the wire).
+                    Omitted (zero) when the task's claim start time was not
+                    recorded — e.g. a task claimed before this field was
+                    introduced.
 
     ItemPickedEvent:
       allOf:

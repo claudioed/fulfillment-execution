@@ -1,0 +1,1 @@
+{"parameters":[{"name":"stationId","in":"path","required":true,"description":"The station id, as returned by `POST /stations`.","schema":{"type":"string","example":"station-1"}}]}

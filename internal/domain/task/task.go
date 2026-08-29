@@ -67,6 +67,7 @@ type Task struct {
 	lease                *Lease
 	fragile              bool
 	giftWrap             bool
+	claimedAt            *time.Time
 }
 
 // New creates a task in the Pending state, ready for the pool. fragile is a
@@ -93,8 +94,11 @@ func New(id shared.TaskId, taskType Type, cpt shared.CPT, orderRef shared.OrderR
 }
 
 // Rehydrate reconstructs a Task from persisted state without re-validating
-// construction invariants (used by repository adapters).
-func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, lease *Lease, fragile bool, giftWrap bool) *Task {
+// construction invariants (used by repository adapters). claimedAt restores
+// the timestamp of the task's current (or most recent) claim, recorded by
+// Claim — nil for tasks persisted before this field existed, or that have
+// never been claimed.
+func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, orderRef shared.OrderRef, required shared.CapabilitySet, lease *Lease, fragile bool, giftWrap bool, claimedAt *time.Time) *Task {
 	return &Task{
 		id:                   id,
 		taskType:             taskType,
@@ -105,6 +109,7 @@ func Rehydrate(id shared.TaskId, taskType Type, status Status, cpt shared.CPT, o
 		lease:                lease,
 		fragile:              fragile,
 		giftWrap:             giftWrap,
+		claimedAt:            claimedAt,
 	}
 }
 
@@ -115,6 +120,14 @@ func (t *Task) CPT() shared.CPT                            { return t.cpt }
 func (t *Task) OrderRef() shared.OrderRef                  { return t.orderRef }
 func (t *Task) RequiredCapabilities() shared.CapabilitySet { return t.requiredCapabilities }
 func (t *Task) Lease() *Lease                              { return t.lease }
+
+// ClaimedAt returns the time the task's current (or most recently active)
+// claim started, as recorded by Claim. It is nil for a task that has never
+// been claimed, and — deliberately — is NOT cleared by Complete, so
+// duration-since-claim can still be computed at completion time (see
+// CompleteTask's Kafka enrichment). A task persisted before this field
+// existed also reports nil (see Rehydrate).
+func (t *Task) ClaimedAt() *time.Time { return t.claimedAt }
 
 // Fragile reports whether this task's upstream order line was classified
 // Fragile by inventory-storage's ProductClassification, as stamped by
@@ -173,6 +186,8 @@ func (t *Task) Claim(stationId shared.StationId, stationCapabilities shared.Capa
 	}
 	t.status = Claimed
 	t.lease = &Lease{StationId: stationId, Expiry: now.Add(leaseDuration)}
+	claimedAt := now
+	t.claimedAt = &claimedAt
 	return nil
 }
 

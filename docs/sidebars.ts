@@ -94,6 +94,7 @@ const sidebars: SidebarsConfig = {
         'adr/0011-gift-wrap-handling-flag',
         'adr/0012-analytical-data-product',
         'adr/0013-fulfillment-mfe-console-adoption',
+        'adr/0014-labor-performance-integration-hooks',
       ],
     },
   ],

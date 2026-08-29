@@ -1235,3 +1235,94 @@ func TestCompleteTask_CountsTheCompletedTaskByType(t *testing.T) {
 		t.Fatalf("completed counter recorded %v, want one Slam", metrics.completed)
 	}
 }
+
+// CheckInStation wires station.CheckIn to the application layer: success
+// assigns the occupant and persists it.
+func TestCheckInStation_AssignsOccupant(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	uc := &usecases.CheckInStation{Stations: h.stations}
+	got, err := uc.Execute(ctx, "s1", "worker-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.IsOccupied() || *got.Occupant() != station.OccupantId("worker-1") {
+		t.Fatalf("expected station occupied by worker-1, got %+v", got.Occupant())
+	}
+
+	persisted, _ := h.stations.FindById(ctx, "s1")
+	if persisted == nil || !persisted.IsOccupied() {
+		t.Fatalf("expected the check-in to be persisted")
+	}
+}
+
+func TestCheckInStation_ReturnsErrStationNotFound(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.CheckInStation{Stations: h.stations}
+	_, err := uc.Execute(context.Background(), "does-not-exist", "worker-1")
+	if !errors.Is(err, usecases.ErrStationNotFound) {
+		t.Fatalf("expected ErrStationNotFound, got %v", err)
+	}
+}
+
+// Invariant (through the use case): one occupant at a time.
+func TestCheckInStation_RejectsSecondOccupant(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	uc := &usecases.CheckInStation{Stations: h.stations}
+	if _, err := uc.Execute(ctx, "s1", "worker-1"); err != nil {
+		t.Fatalf("first check-in should succeed: %v", err)
+	}
+	_, err := uc.Execute(ctx, "s1", "worker-2")
+	if !errors.Is(err, station.ErrOccupied) {
+		t.Fatalf("expected station.ErrOccupied, got %v", err)
+	}
+}
+
+// CheckOutStation wires station.CheckOut to the application layer:
+// success clears the occupant and persists it.
+func TestCheckOutStation_ClearsOccupant(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	_, _ = (&usecases.CheckInStation{Stations: h.stations}).Execute(ctx, "s1", "worker-1")
+
+	uc := &usecases.CheckOutStation{Stations: h.stations}
+	got, err := uc.Execute(ctx, "s1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.IsOccupied() {
+		t.Fatalf("expected station to be vacant after check-out")
+	}
+
+	persisted, _ := h.stations.FindById(ctx, "s1")
+	if persisted == nil || persisted.IsOccupied() {
+		t.Fatalf("expected the check-out to be persisted")
+	}
+}
+
+func TestCheckOutStation_ReturnsErrStationNotFound(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.CheckOutStation{Stations: h.stations}
+	_, err := uc.Execute(context.Background(), "does-not-exist")
+	if !errors.Is(err, usecases.ErrStationNotFound) {
+		t.Fatalf("expected ErrStationNotFound, got %v", err)
+	}
+}
+
+func TestCheckOutStation_RejectsWhenNotOccupied(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	uc := &usecases.CheckOutStation{Stations: h.stations}
+	_, err := uc.Execute(ctx, "s1")
+	if !errors.Is(err, station.ErrNotOccupied) {
+		t.Fatalf("expected station.ErrNotOccupied, got %v", err)
+	}
+}

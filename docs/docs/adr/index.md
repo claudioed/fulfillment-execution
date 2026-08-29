@@ -105,3 +105,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0011](./0011-gift-wrap-handling-flag.md) | Gift wrap handling flag carried on Task and Package | Accepted |
 | [0012](./0012-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted |
 | [0013](./0013-fulfillment-mfe-console-adoption.md) | Adopt the fleet's micro-frontend console architecture — `fulfillment-mfe`, `GET /tasks?orderRef=`, and CORS | Accepted |
+| [0014](./0014-labor-performance-integration-hooks.md) | Labor-performance integration hooks — check-in/check-out wiring and `TaskCompleted` enrichment | Accepted |

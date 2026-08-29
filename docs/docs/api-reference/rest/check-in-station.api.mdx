@@ -1,0 +1,71 @@
+---
+id: check-in-station
+title: "Check a worker or robot into a station"
+description: "Assigns an occupant to a station — the Station aggregate's `CheckIn` invariant enforced through the application layer: one occupant at a time. This is operational state, not a labor-performance domain event in its own right (see [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)): no domain event is published by this endpoint. The checked-in occupant is instead surfaced, best-effort, as `associateId` on the `TaskCompleted` Kafka event when a task claimed by this station is later completed."
+sidebar_label: "Check a worker or robot into a station"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Check a worker or robot into a station"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/stations/{stationId}/check-in"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Assigns an occupant to a station — the Station aggregate's `CheckIn` invariant enforced through the application layer: one occupant at a time. This is operational state, not a labor-performance domain event in its own right (see [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)): no domain event is published by this endpoint. The checked-in occupant is instead surfaced, best-effort, as `associateId` on the `TaskCompleted` Kafka event when a task claimed by this station is later completed.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./check-in-station.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./check-in-station.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./check-in-station.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

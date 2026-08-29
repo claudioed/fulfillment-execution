@@ -84,6 +84,18 @@ const sidebar: SidebarsConfig = {
           label: "PULL-dispatch the best-fit pending task to this station",
           className: "api-method post",
         },
+        {
+          type: "doc",
+          id: "api-reference/rest/check-in-station",
+          label: "Check a worker or robot into a station",
+          className: "api-method post",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/check-out-station",
+          label: "Check the current occupant out of a station",
+          className: "api-method post",
+        },
       ],
     },
     {
@@ -228,6 +240,12 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/schemas/stationresponse",
           label: "StationResponse",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/checkinstationrequest",
+          label: "CheckInStationRequest",
           className: "schema",
         },
       ],
