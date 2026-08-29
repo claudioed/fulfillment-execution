@@ -1,0 +1,71 @@
+---
+id: check-out-station
+title: "Check the current occupant out of a station"
+description: "Clears a station's occupant — the Station aggregate's `CheckOut` invariant enforced through the application layer. Takes no request body. Like check-in, this publishes no domain event (see [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks))."
+sidebar_label: "Check the current occupant out of a station"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Check the current occupant out of a station"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/stations/{stationId}/check-out"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Clears a station's occupant — the Station aggregate's `CheckOut` invariant enforced through the application layer. Takes no request body. Like check-in, this publishes no domain event (see [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)).
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./check-out-station.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./check-out-station.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./check-out-station.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

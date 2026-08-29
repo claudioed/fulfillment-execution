@@ -133,3 +133,14 @@ type stationResponse struct {
 	Capabilities []string `json:"capabilities"`
 	Occupied     bool     `json:"occupied"`
 }
+
+type checkInStationRequest struct {
+	OccupantId string `json:"occupantId"`
+}
+
+func (r checkInStationRequest) validate() string {
+	if r.OccupantId == "" {
+		return "occupantId is required"
+	}
+	return ""
+}

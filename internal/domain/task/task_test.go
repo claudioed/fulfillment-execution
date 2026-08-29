@@ -239,7 +239,7 @@ func TestNew_Getters(t *testing.T) {
 
 func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
 	lease := &task.Lease{StationId: shared.StationId("s1"), Expiry: now.Add(time.Minute)}
-	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Claimed, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), lease, false, false)
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Claimed, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), lease, false, false, nil)
 	if tk.Id() != shared.TaskId("t2") {
 		t.Fatalf("expected Id t2, got %s", tk.Id())
 	}
@@ -283,7 +283,7 @@ func TestNew_NotFragileByDefault(t *testing.T) {
 }
 
 func TestRehydrate_FragileFlag_RoundTrips(t *testing.T) {
-	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Pending, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), nil, true, false)
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Pending, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), nil, true, false, nil)
 	if !tk.Fragile() {
 		t.Fatalf("expected rehydrated Fragile() to be true")
 	}
@@ -319,7 +319,7 @@ func TestNew_NotGiftWrapByDefault(t *testing.T) {
 }
 
 func TestRehydrate_GiftWrapFlag_RoundTrips(t *testing.T) {
-	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Pending, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), nil, false, true)
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Pending, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), nil, false, true, nil)
 	if !tk.GiftWrap() {
 		t.Fatalf("expected rehydrated GiftWrap() to be true")
 	}
@@ -334,5 +334,53 @@ func TestClaim_GiftWrapTaskStillMatchesOnCapabilitiesOnly(t *testing.T) {
 	}
 	if tk.Status() != task.Claimed {
 		t.Fatalf("expected Claimed, got %s", tk.Status())
+	}
+}
+
+// ClaimedAt is nil until the task is claimed, set by Claim to the claim's
+// start time, and — unlike the lease — is NOT cleared by Complete, so a
+// completion-time consumer (see the Kafka publisher's duration enrichment)
+// can still compute elapsed time.
+func TestClaimedAt_NilUntilClaimed(t *testing.T) {
+	tk := newPickTask()
+	if tk.ClaimedAt() != nil {
+		t.Fatalf("expected ClaimedAt() nil before any claim, got %v", tk.ClaimedAt())
+	}
+}
+
+func TestClaim_SetsClaimedAt(t *testing.T) {
+	tk := newPickTask()
+	if err := tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tk.ClaimedAt() == nil || !tk.ClaimedAt().Equal(now) {
+		t.Fatalf("expected ClaimedAt() == %v, got %v", now, tk.ClaimedAt())
+	}
+}
+
+func TestComplete_DoesNotClearClaimedAt(t *testing.T) {
+	tk := newPickTask()
+	_ = tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now, time.Minute)
+	if err := tk.Complete(shared.StationId("s1"), now.Add(10*time.Second)); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tk.ClaimedAt() == nil || !tk.ClaimedAt().Equal(now) {
+		t.Fatalf("expected ClaimedAt() to remain %v after Complete, got %v", now, tk.ClaimedAt())
+	}
+}
+
+func TestRehydrate_ClaimedAtRoundTrips(t *testing.T) {
+	lease := &task.Lease{StationId: shared.StationId("s1"), Expiry: now.Add(time.Minute)}
+	claimedAt := now
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Claimed, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), lease, false, false, &claimedAt)
+	if tk.ClaimedAt() == nil || !tk.ClaimedAt().Equal(claimedAt) {
+		t.Fatalf("expected rehydrated ClaimedAt() == %v, got %v", claimedAt, tk.ClaimedAt())
+	}
+}
+
+func TestRehydrate_ClaimedAtNilForPreMigrationRows(t *testing.T) {
+	tk := task.Rehydrate(shared.TaskId("t2"), task.Pack, task.Pending, shared.NewCPT(now), shared.OrderRef("order-2"), shared.NewCapabilitySet("pack"), nil, false, false, nil)
+	if tk.ClaimedAt() != nil {
+		t.Fatalf("expected nil ClaimedAt() for a pre-migration row, got %v", tk.ClaimedAt())
 	}
 }

@@ -117,7 +117,7 @@ func run() error {
 	)
 	if getenv("EVENT_PUBLISHER", "log") == "kafka" {
 		logger.Info("event publisher configured", "publisher", "kafka", "topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", kafkaBrokers)
-		kafkaPublisher = outboundkafka.NewPublisher(kafkaBrokers, taskRepo, uuidLike)
+		kafkaPublisher = outboundkafka.NewPublisher(kafkaBrokers, taskRepo, stationRepo, uuidLike)
 		analyticsPub = outboundkafka.NewAnalyticsPublisher(kafkaBrokers, taskRepo, uuidLike)
 		// Fan every domain event to BOTH the integration topic and the
 		// dedicated analytics topic (ADR-0012). The analytics stream feeds
@@ -142,6 +142,8 @@ func run() error {
 		ExpireLeases:       &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock},
 		RegisterStation:    &usecases.RegisterStation{Stations: stationRepo, Publisher: publisher},
 		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: taskRepo},
+		CheckInStation:     &usecases.CheckInStation{Stations: stationRepo},
+		CheckOutStation:    &usecases.CheckOutStation{Stations: stationRepo},
 	}
 	router := inboundhttp.NewRouter(handlers, logger)
 

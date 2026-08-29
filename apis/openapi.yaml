@@ -60,8 +60,11 @@ tags:
     description: >
       The Station aggregate: a work position with a capability set,
       occupied by at most one worker/robot at a time. Covers registration
-      (which also serves as idempotent re-certification) and is the entry
-      point for PULL dispatch (`claim-next` is a Station action).
+      (which also serves as idempotent re-certification), check-in/
+      check-out of the occupant (see
+      [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)), and
+      is the entry point for PULL dispatch (`claim-next` is a Station
+      action).
   - name: Packages
     description: >
       The Package aggregate: Pack-path output. An order's scanned contents
@@ -320,6 +323,133 @@ paths:
                 status: 409
                 detail: "usecases: no claimable task for station capabilities"
                 instance: /stations/station-1/claim-next
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations/{stationId}/check-in:
+    post:
+      operationId: checkInStation
+      tags: [Stations]
+      summary: Check a worker or robot into a station
+      description: >
+        Assigns an occupant to a station — the Station aggregate's
+        `CheckIn` invariant enforced through the application layer: one
+        occupant at a time. This is operational state, not a
+        labor-performance domain event in its own right (see
+        [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)):
+        no domain event is published by this endpoint. The checked-in
+        occupant is instead surfaced, best-effort, as `associateId` on the
+        `TaskCompleted` Kafka event when a task claimed by this station is
+        later completed.
+      parameters:
+        - name: stationId
+          in: path
+          required: true
+          description: The station id, as returned by `POST /stations`.
+          schema:
+            type: string
+            example: station-1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckInStationRequest"
+            example:
+              occupantId: worker-42
+      responses:
+        "200":
+          description: Station checked in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationResponse"
+              example:
+                id: station-1
+                capabilities: [pick]
+                occupied: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/check-in
+        "409":
+          description: The station already has an occupant checked in.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-occupied
+                title: Station is already occupied
+                status: 409
+                detail: "station: already occupied"
+                instance: /stations/station-1/check-in
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations/{stationId}/check-out:
+    post:
+      operationId: checkOutStation
+      tags: [Stations]
+      summary: Check the current occupant out of a station
+      description: >
+        Clears a station's occupant — the Station aggregate's `CheckOut`
+        invariant enforced through the application layer. Takes no request
+        body. Like check-in, this publishes no domain event (see
+        [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)).
+      parameters:
+        - name: stationId
+          in: path
+          required: true
+          description: The station id.
+          schema:
+            type: string
+            example: station-1
+      responses:
+        "200":
+          description: Station checked out.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationResponse"
+              example:
+                id: station-1
+                capabilities: [pick]
+                occupied: false
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/check-out
+        "409":
+          description: The station has no occupant checked in.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-occupied
+                title: Station is not occupied
+                status: 409
+                detail: "station: not occupied"
+                instance: /stations/station-1/check-out
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1040,6 +1170,22 @@ components:
           type: boolean
           description: Whether the station currently has an occupant checked in.
           example: false
+
+    CheckInStationRequest:
+      type: object
+      required: [occupantId]
+      properties:
+        occupantId:
+          type: string
+          description: >
+            Identifies the worker or robot checking in. Opaque to this
+            service — carried through to the `associateId` field of a
+            later `TaskCompleted` Kafka event for any task this station
+            completes while the occupant remains checked in (see
+            [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)).
+          example: worker-42
+      example:
+        occupantId: worker-42
 
   responses:
     BadRequest:

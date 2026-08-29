@@ -42,6 +42,8 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 		ExpireLeases:       &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
 		RegisterStation:    &usecases.RegisterStation{Stations: stations, Publisher: publisher},
 		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: tasks},
+		CheckInStation:     &usecases.CheckInStation{Stations: stations},
+		CheckOutStation:    &usecases.CheckOutStation{Stations: stations},
 	}
 	return http.NewRouter(h, nil), tasks, stations, packages, clock
 }
@@ -644,4 +646,115 @@ func TestPostRegisterStation_ThenClaimNextSucceeds(t *testing.T) {
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200 claiming against freshly registered station, got %d: %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestPostCheckInStation_Success(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-1"})
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Id       string `json:"id"`
+		Occupied bool   `json:"occupied"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Id != "s1" || !resp.Occupied {
+		t.Fatalf("expected s1 occupied, got %+v", resp)
+	}
+
+	found, _ := stations.FindById(context.TODO(), "s1")
+	if found == nil || !found.IsOccupied() {
+		t.Fatalf("expected the check-in to be persisted")
+	}
+}
+
+func TestPostCheckInStation_MissingOccupantId_Returns400(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{})
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("expected 400 for missing occupantId, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostCheckInStation_UnknownStation_Returns404(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/does-not-exist/check-in", map[string]any{"occupantId": "worker-1"})
+	if rec.Code != stdhttp.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusNotFound,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found",
+		"/stations/does-not-exist/check-in")
+}
+
+// Domain invariant surfaced through HTTP: one occupant at a time.
+func TestPostCheckInStation_SecondOccupant_Returns409(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-1"})
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-2"})
+	if rec.Code != stdhttp.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusConflict,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/station-occupied",
+		"/stations/s1/check-in")
+}
+
+func TestPostCheckOutStation_Success(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-1"})
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-out", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Occupied bool `json:"occupied"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Occupied {
+		t.Fatalf("expected station vacant after check-out, got %+v", resp)
+	}
+
+	found, _ := stations.FindById(context.TODO(), "s1")
+	if found == nil || found.IsOccupied() {
+		t.Fatalf("expected the check-out to be persisted")
+	}
+}
+
+func TestPostCheckOutStation_UnknownStation_Returns404(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/does-not-exist/check-out", nil)
+	if rec.Code != stdhttp.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusNotFound,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found",
+		"/stations/does-not-exist/check-out")
+}
+
+// Domain invariant surfaced through HTTP: check-out on an empty station.
+func TestPostCheckOutStation_NotOccupied_Returns409(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-out", nil)
+	if rec.Code != stdhttp.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusConflict,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-occupied",
+		"/stations/s1/check-out")
 }
