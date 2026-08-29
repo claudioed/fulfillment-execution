@@ -22,6 +22,12 @@ const sidebar: SidebarsConfig = {
         },
         {
           type: "doc",
+          id: "api-reference/rest/get-tasks-by-order-ref",
+          label: "Look up every task recorded for an order reference",
+          className: "api-method get",
+        },
+        {
+          type: "doc",
           id: "api-reference/rest/claim-next-task",
           label: "PULL-dispatch the best-fit pending task to this station",
           className: "api-method post",
@@ -144,6 +150,12 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/schemas/packagestatus",
           label: "PackageStatus",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/sortlane",
+          label: "SortLane",
           className: "schema",
         },
         {

@@ -93,6 +93,7 @@ const sidebars: SidebarsConfig = {
         'adr/0010-package-segregation-and-sort-lane',
         'adr/0011-gift-wrap-handling-flag',
         'adr/0012-analytical-data-product',
+        'adr/0013-fulfillment-mfe-console-adoption',
       ],
     },
   ],

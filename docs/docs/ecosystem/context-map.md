@@ -105,6 +105,20 @@ sequenceDiagram
 
 ## What is deliberately not wired
 
+### `warehouse-console` — a browser client, not a bounded-context edge
+
+This service also gained a `GET /tasks?orderRef=` read endpoint, a `web/`
+Module Federation remote (`fulfillment-mfe`), and CORS middleware, all as
+this repo's local adoption of the fleet-wide micro-frontend console
+architecture (canonical decision in `warehouse-ops-agent`'s own ADR-0002;
+this repo's adoption side is [ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md)).
+`warehouse-console` is not drawn as a bounded context in the diagram above —
+it is a browser SPA that composes this service's own remote alongside the
+other five, plus a BFF hosted in `warehouse-ops-agent` for the one
+cross-cutting Order Lifecycle screen. It calls this service's REST API over
+HTTP exactly like any other client; it has no domain model of its own and
+no wire-level relationship worth drawing as a context-mapping edge.
+
 ### `workforce-management` — no edge, on purpose
 
 There is no topic, no HTTP call, no shared type between these two services,
