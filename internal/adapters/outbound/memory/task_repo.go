@@ -84,3 +84,19 @@ func (r *TaskRepo) CountByTypeAndStatus(_ context.Context, taskType task.Type, s
 	}
 	return count, nil
 }
+
+func (r *TaskRepo) FindByOrderRef(_ context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []*task.Task
+	for _, t := range r.tasks {
+		if t.OrderRef() == orderRef {
+			result = append(result, t)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Id() < result[j].Id()
+	})
+	return result, nil
+}

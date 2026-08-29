@@ -132,15 +132,16 @@ func run() error {
 	createTask := &usecases.CreateTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId}
 
 	handlers := &inboundhttp.Handlers{
-		CreateTask:      createTask,
-		ClaimNext:       &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
-		RenewLease:      &usecases.RenewLease{Tasks: taskRepo, Clock: clock},
-		CompleteTask:    &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
-		SealPackage:     &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId, ClassificationLookup: classificationLookup},
-		RunSlam:         &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock},
-		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: taskRepo},
-		ExpireLeases:    &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock},
-		RegisterStation: &usecases.RegisterStation{Stations: stationRepo, Publisher: publisher},
+		CreateTask:         createTask,
+		ClaimNext:          &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
+		RenewLease:         &usecases.RenewLease{Tasks: taskRepo, Clock: clock},
+		CompleteTask:       &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
+		SealPackage:        &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId, ClassificationLookup: classificationLookup},
+		RunSlam:            &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock},
+		GetQueueDepth:      &usecases.GetQueueDepth{Tasks: taskRepo},
+		ExpireLeases:       &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock},
+		RegisterStation:    &usecases.RegisterStation{Stations: stationRepo, Publisher: publisher},
+		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: taskRepo},
 	}
 	router := inboundhttp.NewRouter(handlers, logger)
 

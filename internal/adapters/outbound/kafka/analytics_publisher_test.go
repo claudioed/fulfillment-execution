@@ -47,6 +47,9 @@ func (fakeTaskRepo) FindAllClaimed(context.Context) ([]*task.Task, error) { retu
 func (fakeTaskRepo) CountByTypeAndStatus(context.Context, task.Type, task.Status) (int, error) {
 	return 0, nil
 }
+func (fakeTaskRepo) FindByOrderRef(context.Context, shared.OrderRef) ([]*task.Task, error) {
+	return nil, nil
+}
 
 func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
 	at := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
