@@ -98,6 +98,18 @@ func (r *TaskRepo) CountByTypeAndStatus(ctx context.Context, taskType task.Type,
 	return count, err
 }
 
+func (r *TaskRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap
+		FROM tasks WHERE order_ref = $1
+	`, string(orderRef))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTasks(rows)
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

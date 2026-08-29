@@ -471,6 +471,62 @@ func TestGetQueueDepth_CountsPendingTasksOfType(t *testing.T) {
 	}
 }
 
+func TestGetTasksByOrderRef_ReturnsEveryTaskForTheOrder(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(2*time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_, _ = create.Execute(ctx, task.Slam, shared.NewCPT(epoch.Add(3*time.Hour)), "order-2", shared.NewCapabilitySet("slam"), false, false)
+
+	uc := &usecases.GetTasksByOrderRef{Tasks: h.tasks}
+	got, err := uc.Execute(ctx, "order-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tasks for order-1, got %d", len(got))
+	}
+	for _, tk := range got {
+		if tk.OrderRef() != "order-1" {
+			t.Fatalf("expected only order-1 tasks, got orderRef %q", tk.OrderRef())
+		}
+	}
+}
+
+// A retried leg (a second task created for the same order after the first
+// was e.g. abandoned) must show up as a second entry, not be deduplicated —
+// callers need to see every task, including retries.
+func TestGetTasksByOrderRef_IncludesRetriedLegs(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(2*time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+
+	uc := &usecases.GetTasksByOrderRef{Tasks: h.tasks}
+	got, err := uc.Execute(ctx, "order-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 retried PICK legs for order-1, got %d", len(got))
+	}
+}
+
+func TestGetTasksByOrderRef_UnknownOrderRefReturnsEmptyNotError(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.GetTasksByOrderRef{Tasks: h.tasks}
+
+	got, err := uc.Execute(context.Background(), "does-not-exist")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty result, got %d", len(got))
+	}
+}
+
 func TestRegisterStation_AddsStationToPool(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()

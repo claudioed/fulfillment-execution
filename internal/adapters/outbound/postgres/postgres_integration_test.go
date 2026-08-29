@@ -197,6 +197,48 @@ func TestPackageRepo_SaveAndFindById(t *testing.T) {
 	}
 }
 
+// TaskRepo's other query specific to this repo: FindByOrderRef, which backs
+// GET /tasks?orderRef= — must return every task recorded for an order,
+// including retried legs, and an unknown orderRef must return an empty
+// slice rather than an error.
+func TestTaskRepo_FindByOrderRef_ReturnsEveryMatchingTask(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewTaskRepo(pool)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Microsecond)
+
+	pick := task.New("integration-task-orderref-pick", task.Pick, shared.NewCPT(now.Add(time.Hour)), "integration-order-ref-1", shared.NewCapabilitySet("pick"), false, false)
+	retriedPick := task.New("integration-task-orderref-pick-retry", task.Pick, shared.NewCPT(now.Add(90*time.Minute)), "integration-order-ref-1", shared.NewCapabilitySet("pick"), false, false)
+	pack := task.New("integration-task-orderref-pack", task.Pack, shared.NewCPT(now.Add(2*time.Hour)), "integration-order-ref-1", shared.NewCapabilitySet("pack"), false, false)
+	otherOrder := task.New("integration-task-orderref-other", task.Pick, shared.NewCPT(now.Add(time.Hour)), "integration-order-ref-2", shared.NewCapabilitySet("pick"), false, false)
+	for _, tk := range []*task.Task{pick, retriedPick, pack, otherOrder} {
+		if err := repo.Save(ctx, tk); err != nil {
+			t.Fatalf("Save(%s): %v", tk.Id(), err)
+		}
+	}
+
+	got, err := repo.FindByOrderRef(ctx, "integration-order-ref-1")
+	if err != nil {
+		t.Fatalf("FindByOrderRef: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 tasks for integration-order-ref-1 (including retried leg), got %d", len(got))
+	}
+	for _, tk := range got {
+		if tk.OrderRef() != "integration-order-ref-1" {
+			t.Fatalf("expected only integration-order-ref-1 tasks, got orderRef %q", tk.OrderRef())
+		}
+	}
+
+	empty, err := repo.FindByOrderRef(ctx, "integration-order-ref-does-not-exist")
+	if err != nil {
+		t.Fatalf("FindByOrderRef (unknown): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected empty result for unknown orderRef, got %d", len(empty))
+	}
+}
+
 // ProcessedEventsRepo's query specific to this repo: MarkProcessed must be
 // idempotent so an at-least-once source (Kafka) is consumed exactly once.
 func TestProcessedEventsRepo_MarkProcessed_IsIdempotent(t *testing.T) {
