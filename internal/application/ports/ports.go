@@ -24,6 +24,14 @@ type TaskRepo interface {
 	// the lease-expiry sweep.
 	FindAllClaimed(ctx context.Context) ([]*task.Task, error)
 	CountByTypeAndStatus(ctx context.Context, taskType task.Type, status task.Status) (int, error)
+	// FindByOrderRef returns every task created for orderRef — a PICK,
+	// PACK, and SLAM leg is typically one each, but a leg may appear more
+	// than once if it was retried (e.g. a new task created after a prior
+	// one's lease expired without completion), so callers must treat this
+	// as a set of tasks per order, not a single result. Order is
+	// unspecified; an unknown orderRef returns an empty slice, not an
+	// error.
+	FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error)
 }
 
 // StationRepo persists and retrieves Station aggregates.

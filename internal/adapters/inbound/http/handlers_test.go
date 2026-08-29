@@ -32,15 +32,16 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 	newPackageId := func() shared.PackageId { return shared.PackageId("pkg-1") }
 
 	h := &http.Handlers{
-		CreateTask:      &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
-		ClaimNext:       &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
-		RenewLease:      &usecases.RenewLease{Tasks: tasks, Clock: clock},
-		CompleteTask:    &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
-		SealPackage:     &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
-		RunSlam:         &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
-		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: tasks},
-		ExpireLeases:    &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
-		RegisterStation: &usecases.RegisterStation{Stations: stations, Publisher: publisher},
+		CreateTask:         &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
+		ClaimNext:          &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
+		RenewLease:         &usecases.RenewLease{Tasks: tasks, Clock: clock},
+		CompleteTask:       &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
+		SealPackage:        &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
+		RunSlam:            &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
+		GetQueueDepth:      &usecases.GetQueueDepth{Tasks: tasks},
+		ExpireLeases:       &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
+		RegisterStation:    &usecases.RegisterStation{Stations: stations, Publisher: publisher},
+		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: tasks},
 	}
 	return http.NewRouter(h, nil), tasks, stations, packages, clock
 }
@@ -414,6 +415,89 @@ func TestGetQueueDepth(t *testing.T) {
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Depth != 1 {
 		t.Fatalf("expected depth 1, got %d", resp.Depth)
+	}
+}
+
+func TestGetTasksByOrderRef_ReturnsMatchingTasks(t *testing.T) {
+	srv, _, _, _, clock := newTestServer()
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PACK", "cpt": clock.Now().Add(2 * time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pack"},
+	})
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "SLAM", "cpt": clock.Now().Add(3 * time.Hour), "orderRef": "order-2", "requiredCapabilities": []string{"slam"},
+	})
+
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/tasks?orderRef=order-1", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp []struct {
+		Id       string `json:"id"`
+		Type     string `json:"type"`
+		Status   string `json:"status"`
+		OrderRef string `json:"orderRef"`
+		Fragile  bool   `json:"fragile"`
+		GiftWrap bool   `json:"giftWrap"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Fatalf("expected 2 tasks for order-1, got %d: %+v", len(resp), resp)
+	}
+	for _, tk := range resp {
+		if tk.OrderRef != "order-1" {
+			t.Fatalf("expected only order-1 tasks, got %+v", tk)
+		}
+	}
+}
+
+func TestGetTasksByOrderRef_MissingParamReturns400(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/tasks", nil)
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetTasksByOrderRef_UnknownOrderRefReturnsEmptyArray(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/tasks?orderRef=does-not-exist", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp []any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 0 {
+		t.Fatalf("expected empty array, got %v", resp)
+	}
+}
+
+func TestGetTasksByOrderRef_SurfacesLeaseStationId(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/tasks?orderRef=order-1", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp []struct {
+		LeaseStationId *string `json:"leaseStationId"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 1 || resp[0].LeaseStationId == nil || *resp[0].LeaseStationId != "s1" {
+		t.Fatalf("expected leaseStationId s1, got %+v", resp)
 	}
 }
 

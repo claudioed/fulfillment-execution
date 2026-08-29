@@ -17,15 +17,16 @@ import (
 
 // Handlers wires REST endpoints to use cases.
 type Handlers struct {
-	CreateTask      *usecases.CreateTask
-	ClaimNext       *usecases.ClaimNext
-	RenewLease      *usecases.RenewLease
-	CompleteTask    *usecases.CompleteTask
-	SealPackage     *usecases.SealPackage
-	RunSlam         *usecases.RunSlam
-	GetQueueDepth   *usecases.GetQueueDepth
-	ExpireLeases    *usecases.ExpireLeases
-	RegisterStation *usecases.RegisterStation
+	CreateTask         *usecases.CreateTask
+	ClaimNext          *usecases.ClaimNext
+	RenewLease         *usecases.RenewLease
+	CompleteTask       *usecases.CompleteTask
+	SealPackage        *usecases.SealPackage
+	RunSlam            *usecases.RunSlam
+	GetQueueDepth      *usecases.GetQueueDepth
+	ExpireLeases       *usecases.ExpireLeases
+	RegisterStation    *usecases.RegisterStation
+	GetTasksByOrderRef *usecases.GetTasksByOrderRef
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
@@ -212,6 +213,31 @@ func (h *Handlers) GetQueueDepthHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, queueDepthResponse{TaskType: taskType, Depth: depth})
+}
+
+// GetTasksHandler handles GET /tasks?orderRef=<ref>. It requires the
+// orderRef query parameter (400 if missing) and returns every task
+// recorded for that order — normally one PICK/PACK/SLAM leg each, more if
+// a leg was retried after a lease expired — as a JSON array. An unknown
+// orderRef is not an error: it returns an empty array.
+func (h *Handlers) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
+	orderRef := r.URL.Query().Get("orderRef")
+	if orderRef == "" {
+		writeBadRequest(w, r, "orderRef is required")
+		return
+	}
+
+	tasks, err := h.GetTasksByOrderRef.Execute(r.Context(), shared.OrderRef(orderRef))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	resp := make([]taskResponse, 0, len(tasks))
+	for _, t := range tasks {
+		resp = append(resp, toTaskResponse(t))
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // PostExpireLeases handles POST /tasks/expire-leases.

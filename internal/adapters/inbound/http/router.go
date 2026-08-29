@@ -42,6 +42,7 @@ func NewRouter(h *Handlers, logger *slog.Logger) *chi.Mux {
 	r.Get("/healthz", h.GetHealthz)
 	r.Post("/stations", h.PostRegisterStation)
 	r.Post("/tasks", h.PostTask)
+	r.Get("/tasks", h.GetTasksHandler)
 	r.Post("/stations/{stationId}/claim-next", h.PostClaimNext)
 	r.Post("/tasks/{id}/renew-lease", h.PostRenewLease)
 	r.Post("/tasks/{id}/complete", h.PostCompleteTask)
