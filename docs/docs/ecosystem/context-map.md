@@ -162,6 +162,13 @@ There is no adapter, no topic, and no command channel in this repository. The
 edge is drawn dashed because it is the real shape of the system, not because
 anything implements it.
 
+As of [ADR-0015](../adr/0015-wcs-equipment-anti-corruption-seam.md), the
+boundary is no longer prose-only: `internal/application/ports.EquipmentCommandPort`
+is a real, but deliberately unimplemented, outbound port. No adapter
+satisfies it and no use case calls it — it exists so that if a WCS
+integration is ever scoped, its vocabulary is translated at that one seam
+and never leaks into `Task`, `Package`, or `Station`.
+
 ## Strategic relationships in one table
 
 Full reasoning on [Context relationships](../ddd/context-relationships.md).

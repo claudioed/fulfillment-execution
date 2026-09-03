@@ -106,3 +106,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0012](./0012-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted |
 | [0013](./0013-fulfillment-mfe-console-adoption.md) | Adopt the fleet's micro-frontend console architecture — `fulfillment-mfe`, `GET /tasks?orderRef=`, and CORS | Accepted |
 | [0014](./0014-labor-performance-integration-hooks.md) | Labor-performance integration hooks — check-in/check-out wiring and `TaskCompleted` enrichment | Accepted |
+| [0015](./0015-wcs-equipment-anti-corruption-seam.md) | Structural anti-corruption-layer seam for the (unbuilt) WCS tier | Accepted |
