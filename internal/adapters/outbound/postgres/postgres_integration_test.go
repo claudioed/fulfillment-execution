@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -135,6 +136,46 @@ func TestStationRepo_SaveAndFindById(t *testing.T) {
 	}
 	if !got.CanAccept(shared.NewCapabilitySet("pick")) {
 		t.Fatalf("expected round-tripped station to keep its capabilities")
+	}
+}
+
+// TestStationRepo_CountByCapability proves the real Postgres
+// ANY(capabilities) containment query against actual rows, not just the
+// in-memory adapter's Go-side filter — the two must agree, since
+// GetInstalledCapacity's behavior depends on whichever one is wired in
+// production.
+func TestStationRepo_CountByCapability(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewStationRepo(pool)
+	ctx := context.Background()
+
+	capability := shared.Capability(fmt.Sprintf("integration-cap-%d", time.Now().UnixNano()))
+	otherCapability := shared.Capability(fmt.Sprintf("integration-other-cap-%d", time.Now().UnixNano()))
+
+	if err := repo.Save(ctx, station.New(shared.StationId("cap-station-1"), shared.NewCapabilitySet(capability))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := repo.Save(ctx, station.New(shared.StationId("cap-station-2"), shared.NewCapabilitySet(capability, otherCapability))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := repo.Save(ctx, station.New(shared.StationId("cap-station-3"), shared.NewCapabilitySet(otherCapability))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := repo.CountByCapability(ctx, capability)
+	if err != nil {
+		t.Fatalf("CountByCapability: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("expected 2 stations with capability %q, got %d", capability, got)
+	}
+
+	got, err = repo.CountByCapability(ctx, shared.Capability("no-such-capability"))
+	if err != nil {
+		t.Fatalf("CountByCapability: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("expected 0 stations for an unregistered capability, got %d", got)
 	}
 }
 

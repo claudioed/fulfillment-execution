@@ -108,6 +108,11 @@ type queueDepthResponse struct {
 	Depth    int    `json:"depth"`
 }
 
+type installedCapacityResponse struct {
+	Capability string `json:"capability"`
+	Installed  int    `json:"installed"`
+}
+
 type expireLeasesResponse struct {
 	Freed int `json:"freed"`
 }

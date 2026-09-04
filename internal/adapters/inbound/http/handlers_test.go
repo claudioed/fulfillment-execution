@@ -53,6 +53,7 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 			Publisher:      publisher,
 			Clock:          clock,
 		},
+		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stations},
 	}
 	return http.NewRouter(h, nil), tasks, stations, packages, clock
 }
@@ -426,6 +427,52 @@ func TestGetQueueDepth(t *testing.T) {
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Depth != 1 {
 		t.Fatalf("expected depth 1, got %d", resp.Depth)
+	}
+}
+
+// TestGetInstalledCapacity is the read endpoint workforce-management's
+// CommitShiftPlan calls to enforce plannedHeads against the real Station
+// registry — see ADR-0018.
+func TestGetInstalledCapacity(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	doJSON(t, srv, stdhttp.MethodPost, "/stations", map[string]any{
+		"stationId": "s1", "capabilities": []string{"pick"},
+	})
+	doJSON(t, srv, stdhttp.MethodPost, "/stations", map[string]any{
+		"stationId": "s2", "capabilities": []string{"pick", "pack"},
+	})
+
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/capacity/pick", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Capability string `json:"capability"`
+		Installed  int    `json:"installed"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Capability != "pick" || resp.Installed != 2 {
+		t.Fatalf("expected capability pick, installed 2, got %+v", resp)
+	}
+}
+
+// TestGetInstalledCapacity_UnregisteredCapability_ReturnsZeroNotError proves
+// this endpoint mirrors GetQueueDepthHandler's own contract: an
+// unrecognized capability is not a 404, it is a real answer of zero.
+func TestGetInstalledCapacity_UnregisteredCapability_ReturnsZeroNotError(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/capacity/rebin", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Installed int `json:"installed"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.Installed != 0 {
+		t.Fatalf("expected installed 0, got %d", resp.Installed)
 	}
 }
 

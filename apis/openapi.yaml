@@ -795,6 +795,43 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /capacity/{capability}:
+    get:
+      operationId: getInstalledCapacity
+      tags: [Stations]
+      summary: Read how many registered stations hold a given capability (read model)
+      description: >
+        A projection over the Station registry, not a staffing count: returns
+        how many currently-registered stations hold `capability`, regardless
+        of occupancy. This is the raw installed ceiling a process path can
+        ever be staffed up to — workforce-management's CommitShiftPlan calls
+        this endpoint to enforce `plannedHeads` against reality, live,
+        instead of trusting a caller-supplied installed-station count alone
+        (see this repo's ADR-0018). Read-only — never mutates state. An
+        unrecognized `capability` is not an error; it simply has an
+        installed count of `0`, the same "count over existing rows, not a
+        lookup against a fixed enum" contract `getQueueDepth` already uses.
+      parameters:
+        - name: capability
+          in: path
+          required: true
+          description: The capability to count registered stations for (e.g. pick, pack, slam, rebin).
+          schema:
+            type: string
+            example: pick
+      responses:
+        "200":
+          description: Current count of registered stations holding `capability`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstalledCapacityResponse"
+              example:
+                capability: pick
+                installed: 4
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /tasks/expire-leases:
     post:
       operationId: expireLeases
@@ -1127,6 +1164,18 @@ components:
           format: int32
           description: Count of currently Pending tasks of this type.
           example: 3
+
+    InstalledCapacityResponse:
+      type: object
+      properties:
+        capability:
+          type: string
+          example: pick
+        installed:
+          type: integer
+          format: int32
+          description: Count of currently-registered stations holding this capability, regardless of occupancy.
+          example: 4
 
     ExpireLeasesResponse:
       type: object

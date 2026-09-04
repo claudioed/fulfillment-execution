@@ -109,3 +109,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0015](./0015-wcs-equipment-anti-corruption-seam.md) | Structural anti-corruption-layer seam for the (unbuilt) WCS tier | Accepted |
 | [0016](./0016-rebin-and-order-consolidation.md) | REBIN task type and OrderConsolidation, kept inside fulfillment-execution | Accepted |
 | [0017](./0017-process-path-catalogue-as-configuration.md) | Process-path catalogue as configuration, replacing the path_id-prefix guess | Accepted |
+| [0018](./0018-installed-capacity-read-endpoint.md) | Installed-capacity read endpoint for workforce-management's capacity ceiling | Accepted |
