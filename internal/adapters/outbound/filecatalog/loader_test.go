@@ -23,15 +23,19 @@ func TestLoad_ValidCatalogue_LoadsAllDeclaredPaths(t *testing.T) {
 building: test-fc
 paths:
   - id: PICK
+    matchPrefix: pick
     direct: true
     requiredCapabilities: [pick]
   - id: PACK
+    matchPrefix: pack
     direct: true
     requiredCapabilities: [pack]
   - id: REBIN
+    matchPrefix: rebin
     direct: true
     requiredCapabilities: [rebin]
   - id: SLAM
+    matchPrefix: slam
     direct: true
     requiredCapabilities: [slam]
 `)
@@ -41,6 +45,14 @@ paths:
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, id := range []string{"PICK", "PACK", "REBIN", "SLAM"} {
+		if _, err := cat.Lookup(id); err != nil {
+			t.Fatalf("Lookup(%q): unexpected error %v", id, err)
+		}
+	}
+	// Real-world path_id forms must resolve too, not just the bare
+	// canonical id — see path_definition_test.go's regression test for
+	// the full rationale.
+	for _, id := range []string{"pick", "pick-zone-a", "pack-soak"} {
 		if _, err := cat.Lookup(id); err != nil {
 			t.Fatalf("Lookup(%q): unexpected error %v", id, err)
 		}
@@ -75,6 +87,7 @@ func TestLoad_PathWithEmptyId_ReturnsError(t *testing.T) {
 building: bad-fc
 paths:
   - id: ""
+    matchPrefix: pick
     direct: true
     requiredCapabilities: [pick]
 `)
@@ -84,11 +97,27 @@ paths:
 	}
 }
 
+func TestLoad_PathWithEmptyMatchPrefix_ReturnsError(t *testing.T) {
+	path := writeTempCatalogue(t, `
+building: bad-fc
+paths:
+  - id: PICK
+    matchPrefix: ""
+    direct: true
+    requiredCapabilities: [pick]
+`)
+	_, err := filecatalog.Load(path)
+	if err == nil {
+		t.Fatal("expected an error for a path with an empty matchPrefix, got nil")
+	}
+}
+
 func TestLoad_PathWithNoCapabilities_ReturnsError(t *testing.T) {
 	path := writeTempCatalogue(t, `
 building: bad-fc
 paths:
   - id: PICK
+    matchPrefix: pick
     direct: true
     requiredCapabilities: []
 `)
@@ -121,6 +150,12 @@ func TestLoad_RealWarehouseInfraCatalogue(t *testing.T) {
 	for _, id := range []string{"PICK", "PACK", "REBIN", "SLAM"} {
 		if _, err := cat.Lookup(id); err != nil {
 			t.Fatalf("real catalogue missing expected path %q: %v", id, err)
+		}
+	}
+	// The real fleet path_id forms this catalogue exists to handle.
+	for _, id := range []string{"pick", "pick-zone-a", "pack-soak"} {
+		if _, err := cat.Lookup(id); err != nil {
+			t.Fatalf("real catalogue failed to resolve real-world path_id %q: %v", id, err)
 		}
 	}
 }

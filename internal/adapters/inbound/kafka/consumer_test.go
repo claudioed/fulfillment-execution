@@ -29,10 +29,10 @@ func idSeq(prefix string) func() shared.TaskId {
 // mirroring warehouse-infra's real sortable-fc.yaml declared paths.
 func testCatalogue() *pathcatalog.Catalogue {
 	return pathcatalog.New([]pathcatalog.PathDefinition{
-		{Id: "PICK", Direct: true, RequiredCapabilities: []string{"pick"}},
-		{Id: "PACK", Direct: true, RequiredCapabilities: []string{"pack"}},
-		{Id: "REBIN", Direct: true, RequiredCapabilities: []string{"rebin"}},
-		{Id: "SLAM", Direct: true, RequiredCapabilities: []string{"slam"}},
+		{Id: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}},
+		{Id: "PACK", MatchPrefix: "pack", Direct: true, RequiredCapabilities: []string{"pack"}},
+		{Id: "REBIN", MatchPrefix: "rebin", Direct: true, RequiredCapabilities: []string{"rebin"}},
+		{Id: "SLAM", MatchPrefix: "slam", Direct: true, RequiredCapabilities: []string{"slam"}},
 	})
 }
 
@@ -197,6 +197,40 @@ func TestHandleMessage_DerivesTaskTypeFromCatalogue(t *testing.T) {
 	}
 	if slam != 1 {
 		t.Fatalf("expected 1 SLAM task, got %d", slam)
+	}
+}
+
+// The regression this fix exists to prevent: real WorkReleased events
+// across this fleet carry station/zone/scenario-qualified path_id
+// values (order-management's default "pick", e2e fixtures' "pick-zone-a"
+// and "pick-soak"), not the bare canonical catalogue id. Every one of
+// these must resolve to the correct task type, not fail as unknown.
+func TestHandleMessage_ResolvesRealFleetPathIdVariants(t *testing.T) {
+	c, tasks := newConsumer(t)
+
+	cases := []struct {
+		eventId  string
+		pathId   string
+		wantType task.Type
+	}{
+		{"evt-default-pick", "pick", task.Pick},
+		{"evt-zone-a", "pick-zone-a", task.Pick},
+		{"evt-pick-soak", "pick-soak", task.Pick},
+		{"evt-pack-soak", "pack-soak", task.Pack},
+	}
+	for _, tc := range cases {
+		if err := c.HandleMessage(context.Background(), workReleasedJSON(tc.eventId, tc.pathId, "wu-variant")); err != nil {
+			t.Fatalf("unexpected error for real-world path_id %q: %v", tc.pathId, err)
+		}
+	}
+
+	pick, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pick, task.Pending)
+	pack, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pack, task.Pending)
+	if pick != 3 {
+		t.Fatalf("expected 3 Pick tasks from the 3 pick-family path_ids, got %d", pick)
+	}
+	if pack != 1 {
+		t.Fatalf("expected 1 Pack task from the pack-family path_id, got %d", pack)
 	}
 }
 

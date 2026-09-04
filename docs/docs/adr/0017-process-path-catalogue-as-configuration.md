@@ -211,3 +211,39 @@ same `//nolint:gosec` justification this fleet already uses for
 `make check-all`, and `gremlins unleash ./internal/domain/task` (100%
 efficacy/coverage, matching the pre-existing baseline this feature does
 not touch) all pass.
+
+## Addendum (2026-09-04): exact-match lookup was wrong, fixed to prefix-family matching
+
+The version of this decision that first shipped implemented
+`Catalogue.Lookup` as an **exact string match** against a bare canonical
+id (`"PICK"`, `"PACK"`, etc.), and the catalogue's own schema comment
+claimed this exact string was "the join key across all three services."
+That was wrong, and it was a real, caught-before-wider-damage regression:
+**no real `path_id` value anywhere in this fleet is the bare canonical
+id.** `order-management`'s `shared.DefaultPathId` is the plain lower-case
+`"pick"`; the e2e test fixtures and `warehouse-ops-agent`'s seeded
+targets use station/zone/scenario-qualified forms like `"pick-zone-a"`,
+`"pick-soak"`, and `"pick-t5-imbalance"`. The exact-match version of this
+catalogue would have rejected every one of those as `ErrUnknownPath` —
+the very failure mode ("silently misroute or reject real, valid work")
+this ADR's own Context section identified as the reason to replace the
+old prefix-guessing convention, just relocated to a different bug.
+
+The deleted prefix-guessing convention actually had this part right: it
+matched a whole *family* of `path_id` values sharing a prefix, not one
+literal string per task type. The fix restores that family-matching
+behavior, but as **declared configuration** instead of hardcoded Go
+`strings.HasPrefix` calls: `PathDefinition` gained a `MatchPrefix` field,
+and `Catalogue.Lookup(id)` now does a case-insensitive check of "does
+`id` equal `MatchPrefix`, or does it start with `MatchPrefix + "-"`" —
+never a bare substring match (a hypothetical `"picking-station"` must
+NOT match the `pick` family). The warehouse-infra catalogue file gained
+a `matchPrefix: pick` (etc.) field per path alongside the existing `id`.
+
+This was caught by adding a dedicated regression test
+(`TestCatalogue_Lookup_RealFleetPathIdVariants`,
+`TestHandleMessage_ResolvesRealFleetPathIdVariants`) that exercises the
+fleet's actual observed `path_id` forms rather than only the synthetic
+literal-match fixtures the original tests used — the gap in the original
+test suite that let this ship. Every consuming repo's own mirror of this
+port must use the same `MatchPrefix` semantics, not a bare exact match.

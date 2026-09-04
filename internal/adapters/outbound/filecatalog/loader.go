@@ -26,6 +26,7 @@ type document struct {
 
 type pathDocument struct {
 	Id                   string   `yaml:"id"`
+	MatchPrefix          string   `yaml:"matchPrefix"`
 	Direct               bool     `yaml:"direct"`
 	RequiredCapabilities []string `yaml:"requiredCapabilities"`
 }
@@ -33,10 +34,11 @@ type pathDocument struct {
 // Load reads and parses the catalogue YAML at path, validating it into a
 // pathcatalog.Catalogue. It returns an error — never a partial/empty
 // catalogue — if the file cannot be read, is not valid YAML, declares
-// zero paths, or declares any path with an empty id or an empty
-// requiredCapabilities set. Callers (composition roots) are expected to
-// treat a non-nil error as fatal: log it and exit, do not start serving
-// traffic with a catalogue that failed to load.
+// zero paths, or declares any path with an empty id, an empty
+// matchPrefix, or an empty requiredCapabilities set. Callers
+// (composition roots) are expected to treat a non-nil error as fatal:
+// log it and exit, do not start serving traffic with a catalogue that
+// failed to load.
 func Load(path string) (*pathcatalog.Catalogue, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // path is operator-controlled config (a boot-time flag/env value), not user input.
 	if err != nil {
@@ -57,11 +59,15 @@ func Load(path string) (*pathcatalog.Catalogue, error) {
 		if p.Id == "" {
 			return nil, fmt.Errorf("filecatalog: %s: path at index %d has an empty id", path, i)
 		}
+		if p.MatchPrefix == "" {
+			return nil, fmt.Errorf("filecatalog: %s: path %q has an empty matchPrefix", path, p.Id)
+		}
 		if len(p.RequiredCapabilities) == 0 {
 			return nil, fmt.Errorf("filecatalog: %s: path %q declares zero requiredCapabilities", path, p.Id)
 		}
 		defs = append(defs, pathcatalog.PathDefinition{
 			Id:                   p.Id,
+			MatchPrefix:          p.MatchPrefix,
 			Direct:               p.Direct,
 			RequiredCapabilities: p.RequiredCapabilities,
 		})
