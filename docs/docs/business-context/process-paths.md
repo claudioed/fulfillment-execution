@@ -143,22 +143,20 @@ reasoning about Pick.
 ## How a released work unit becomes a path
 
 The `WorkReleased` consumer derives the task type from
-`WorkReleased.data.path_id` using a **prefix convention**: `pick-*` → `PICK`,
-`pack-*` → `PACK`, `slam-*` → `SLAM`, defaulting to `PICK` when no prefix
-matches.
+`WorkReleased.data.path_id` via a real lookup against the fleet's declared
+process-path catalogue (`warehouse-infra`'s
+`config/process-paths/sortable-fc.yaml`, loaded once at startup into
+`internal/domain/pathcatalog.Catalogue`). An unrecognized `path_id` is a
+hard error — the message handling fails outright rather than silently
+defaulting to any particular task type. See
+[ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md) for the
+full reasoning, including why this replaced an earlier
+path_id-prefix-guessing convention that had exactly this silent-default
+bug.
 
-:::caution Known simplification
-The prefix convention is a documented shortcut for this round of integration,
-not a durable contract. `path_id` does not in general carry the task type, and
-a real deployment would need either an explicit `task_type` field on
-`WorkReleased` or a lookup against the process-path registry. It is called out
-here, in the repo README, and in `INTEGRATION.md` so that nobody mistakes it
-for the intended long-term mapping. The `PICK` default in particular means a
-malformed `path_id` produces a Pick task rather than an error.
-:::
-
-Required capabilities are derived from the task type — a `PICK` task requires
-`pick` — using the same capability vocabulary `workforce-management` uses when
-it plans headcount per path. That shared vocabulary is the only thing the two
-contexts have in common, and it is deliberately a *published language*, not a
-shared type.
+Required capabilities are read directly from the catalogue entry for the
+matched path — the same capability vocabulary `workforce-management` uses
+when it plans headcount per path, because both services read the identical
+YAML file. That shared file is a **published language**, not a shared
+Go type: neither service imports the other's code, both simply agree on
+the same schema.
