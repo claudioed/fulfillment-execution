@@ -96,6 +96,7 @@ const sidebars: SidebarsConfig = {
         'adr/0013-fulfillment-mfe-console-adoption',
         'adr/0014-labor-performance-integration-hooks',
         'adr/0015-wcs-equipment-anti-corruption-seam',
+        'adr/0016-rebin-and-order-consolidation',
       ],
     },
   ],

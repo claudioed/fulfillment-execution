@@ -21,6 +21,7 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 	tasks := memory.NewTaskRepo()
 	stations := memory.NewStationRepo()
 	packages := memory.NewPackageRepo()
+	consolidations := memory.NewOrderConsolidationRepo()
 	publisher := events.NewBufferedPublisher()
 	clock := memory.NewFixedClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
 
@@ -31,8 +32,10 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 	}
 	newPackageId := func() shared.PackageId { return shared.PackageId("pkg-1") }
 
+	createTask := &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId}
+
 	h := &http.Handlers{
-		CreateTask:         &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
+		CreateTask:         createTask,
 		ClaimNext:          &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
 		RenewLease:         &usecases.RenewLease{Tasks: tasks, Clock: clock},
 		CompleteTask:       &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
@@ -44,6 +47,12 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: tasks},
 		CheckInStation:     &usecases.CheckInStation{Stations: stations},
 		CheckOutStation:    &usecases.CheckOutStation{Stations: stations},
+		ArriveAtRebin: &usecases.ArriveAtRebin{
+			Consolidations: consolidations,
+			CreateTask:     createTask,
+			Publisher:      publisher,
+			Clock:          clock,
+		},
 	}
 	return http.NewRouter(h, nil), tasks, stations, packages, clock
 }
@@ -757,4 +766,103 @@ func TestPostCheckOutStation_NotOccupied_Returns409(t *testing.T) {
 	assertProblemDetails(t, rec, stdhttp.StatusConflict,
 		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-occupied",
 		"/stations/s1/check-out")
+}
+
+func TestPostArriveAtRebin_SingleLineOrderCreatesPackTaskImmediately(t *testing.T) {
+	srv, tasks, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", map[string]any{
+		"orderRef":                 "order-1",
+		"lineId":                   "line-1",
+		"requiredLineIds":          []string{"line-1"},
+		"packCpt":                  time.Now().Add(time.Hour),
+		"packRequiredCapabilities": []string{"pack"},
+	})
+	if rec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	packTasks, _ := tasks.FindByOrderRef(context.TODO(), "order-1")
+	if len(packTasks) != 1 {
+		t.Fatalf("expected exactly 1 PACK task for the single-line order, got %d", len(packTasks))
+	}
+}
+
+func TestPostArriveAtRebin_MultiLineOrderWaitsForAllArrivals(t *testing.T) {
+	srv, tasks, _, _, _ := newTestServer()
+	body := func(lineId string) map[string]any {
+		return map[string]any{
+			"orderRef":                 "order-1",
+			"lineId":                   lineId,
+			"requiredLineIds":          []string{"line-1", "line-2"},
+			"packCpt":                  time.Now().Add(time.Hour),
+			"packRequiredCapabilities": []string{"pack"},
+		}
+	}
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", body("line-1"))
+	if rec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204 on first arrival, got %d: %s", rec.Code, rec.Body.String())
+	}
+	packTasks, _ := tasks.FindByOrderRef(context.TODO(), "order-1")
+	if len(packTasks) != 0 {
+		t.Fatalf("expected no PACK task before both lines arrive, got %d", len(packTasks))
+	}
+
+	rec = doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", body("line-2"))
+	if rec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204 on second arrival, got %d: %s", rec.Code, rec.Body.String())
+	}
+	packTasks, _ = tasks.FindByOrderRef(context.TODO(), "order-1")
+	if len(packTasks) != 1 {
+		t.Fatalf("expected exactly 1 PACK task once both lines have arrived, got %d", len(packTasks))
+	}
+}
+
+func TestPostArriveAtRebin_MissingOrderRef_Returns400(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", map[string]any{
+		"lineId":                   "line-1",
+		"requiredLineIds":          []string{"line-1"},
+		"packCpt":                  time.Now().Add(time.Hour),
+		"packRequiredCapabilities": []string{"pack"},
+	})
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Domain invariant surfaced through HTTP: an arrival for a line outside
+// the order's established required set is rejected as 422, not silently
+// accepted or treated as a data-integrity crash.
+func TestPostArriveAtRebin_UnknownLine_Returns422(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	base := map[string]any{
+		"orderRef":                 "order-1",
+		"requiredLineIds":          []string{"line-1"},
+		"packCpt":                  time.Now().Add(time.Hour),
+		"packRequiredCapabilities": []string{"pack"},
+	}
+
+	firstArrival := map[string]any{}
+	for k, v := range base {
+		firstArrival[k] = v
+	}
+	firstArrival["lineId"] = "line-1"
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", firstArrival)
+	if rec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204 on first arrival, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	unknownArrival := map[string]any{}
+	for k, v := range base {
+		unknownArrival[k] = v
+	}
+	unknownArrival["lineId"] = "line-not-in-order"
+	rec = doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", unknownArrival)
+	if rec.Code != stdhttp.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusUnprocessableEntity,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/rebin-unknown-line",
+		"/rebin/arrivals")
 }

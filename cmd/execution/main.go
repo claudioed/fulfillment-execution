@@ -80,10 +80,11 @@ func run() error {
 	kafkaBrokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
 
 	var (
-		taskRepo        ports.TaskRepo
-		stationRepo     ports.StationRepo
-		packageRepo     ports.PackageRepo
-		processedEvents ports.ProcessedEvents
+		taskRepo          ports.TaskRepo
+		stationRepo       ports.StationRepo
+		packageRepo       ports.PackageRepo
+		processedEvents   ports.ProcessedEvents
+		consolidationRepo ports.OrderConsolidationRepo
 	)
 
 	if databaseURL == "" {
@@ -92,6 +93,7 @@ func run() error {
 		stationRepo = memory.NewStationRepo()
 		packageRepo = memory.NewPackageRepo()
 		processedEvents = memory.NewProcessedEventsRepo()
+		consolidationRepo = memory.NewOrderConsolidationRepo()
 	} else {
 		if err := postgres.Migrate(databaseURL, "migrations"); err != nil {
 			return err
@@ -108,6 +110,7 @@ func run() error {
 		stationRepo = postgres.NewStationRepo(pool)
 		packageRepo = postgres.NewPackageRepo(pool)
 		processedEvents = postgres.NewProcessedEventsRepo(pool)
+		consolidationRepo = postgres.NewOrderConsolidationRepo(pool)
 	}
 
 	var (
@@ -144,6 +147,12 @@ func run() error {
 		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: taskRepo},
 		CheckInStation:     &usecases.CheckInStation{Stations: stationRepo},
 		CheckOutStation:    &usecases.CheckOutStation{Stations: stationRepo},
+		ArriveAtRebin: &usecases.ArriveAtRebin{
+			Consolidations: consolidationRepo,
+			CreateTask:     createTask,
+			Publisher:      publisher,
+			Clock:          clock,
+		},
 	}
 	router := inboundhttp.NewRouter(handlers, logger)
 
