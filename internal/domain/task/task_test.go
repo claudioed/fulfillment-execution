@@ -384,3 +384,34 @@ func TestRehydrate_ClaimedAtNilForPreMigrationRows(t *testing.T) {
 		t.Fatalf("expected nil ClaimedAt() for a pre-migration row, got %v", tk.ClaimedAt())
 	}
 }
+
+// REBIN is a fourth process-path task type (see the consolidation package
+// and its ADR) and deliberately gets NO special-cased behavior anywhere in
+// Task's claim/complete lifecycle — a REBIN task is claimed, leased, and
+// completed by the exact same rules as PICK/PACK/SLAM. This test proves
+// that at the Task level. It intentionally does not exercise order-level
+// fan-in/consolidation at all, because Task has no opinion about that —
+// see the consolidation package for that concern.
+func TestClaim_RebinTaskFollowsIdenticalRulesToOtherTypes(t *testing.T) {
+	tk := task.New(
+		shared.TaskId("t-rebin"),
+		task.Rebin,
+		shared.NewCPT(now.Add(time.Hour)),
+		shared.OrderRef("order-1"),
+		shared.NewCapabilitySet("rebin"),
+		false,
+		false,
+	)
+	if err := tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("rebin"), now, time.Minute); err != nil {
+		t.Fatalf("unexpected error claiming a REBIN task: %v", err)
+	}
+	if tk.Status() != task.Claimed || tk.Type() != task.Rebin {
+		t.Fatalf("expected Claimed REBIN task, got status=%s type=%s", tk.Status(), tk.Type())
+	}
+	if err := tk.Complete(shared.StationId("s1"), now.Add(30*time.Second)); err != nil {
+		t.Fatalf("unexpected error completing a REBIN task: %v", err)
+	}
+	if tk.Status() != task.Completed {
+		t.Fatalf("expected Completed, got %s", tk.Status())
+	}
+}
