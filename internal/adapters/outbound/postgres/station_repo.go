@@ -58,3 +58,16 @@ func (r *StationRepo) FindById(ctx context.Context, id shared.StationId) (*stati
 	}
 	return station.Rehydrate(shared.StationId(stationId), sliceToCapabilities(capabilities), occ), nil
 }
+
+// CountByCapability returns how many registered stations have capability
+// in their capabilities array, via Postgres's ANY(array) containment
+// operator (`capability = ANY(capabilities)`) — a single indexed-scan-free
+// query, no need to load every Station aggregate into memory just to
+// filter it in Go.
+func (r *StationRepo) CountByCapability(ctx context.Context, capability shared.Capability) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM stations WHERE $1 = ANY(capabilities)
+	`, string(capability)).Scan(&count)
+	return count, err
+}

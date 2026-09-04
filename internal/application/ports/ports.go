@@ -40,6 +40,13 @@ type TaskRepo interface {
 type StationRepo interface {
 	Save(ctx context.Context, s *station.Station) error
 	FindById(ctx context.Context, id shared.StationId) (*station.Station, error)
+	// CountByCapability returns how many currently-registered stations
+	// hold capability, regardless of occupancy. This is a raw
+	// installed-capacity count (stations that CAN work the path), not a
+	// staffing count (associates actively working it right now) — see
+	// GetInstalledCapacity's own doc comment for the distinction this
+	// use case depends on.
+	CountByCapability(ctx context.Context, capability shared.Capability) (int, error)
 }
 
 // PackageRepo persists and retrieves Package aggregates.

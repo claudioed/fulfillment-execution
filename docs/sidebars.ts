@@ -98,6 +98,7 @@ const sidebars: SidebarsConfig = {
         'adr/0015-wcs-equipment-anti-corruption-seam',
         'adr/0016-rebin-and-order-consolidation',
         'adr/0017-process-path-catalogue-as-configuration',
+        'adr/0018-installed-capacity-read-endpoint',
       ],
     },
   ],

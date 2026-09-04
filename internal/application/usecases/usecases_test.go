@@ -471,6 +471,38 @@ func TestGetQueueDepth_CountsPendingTasksOfType(t *testing.T) {
 	}
 }
 
+func TestGetInstalledCapacity_CountsStationsHoldingCapability(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	_ = h.stations.Save(ctx, station.New("s2", shared.NewCapabilitySet("pick", "pack")))
+	_ = h.stations.Save(ctx, station.New("s3", shared.NewCapabilitySet("pack")))
+
+	uc := &usecases.GetInstalledCapacity{Stations: h.stations}
+	got, err := uc.Execute(ctx, "pick")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("expected 2 stations with pick capability, got %d", got)
+	}
+}
+
+func TestGetInstalledCapacity_UnknownCapability_ReturnsZero(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	uc := &usecases.GetInstalledCapacity{Stations: h.stations}
+	got, err := uc.Execute(ctx, "rebin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("expected 0, got %d", got)
+	}
+}
+
 func TestGetTasksByOrderRef_ReturnsEveryTaskForTheOrder(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()

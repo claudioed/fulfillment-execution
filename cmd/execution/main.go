@@ -165,6 +165,7 @@ func run() error {
 			Publisher:      publisher,
 			Clock:          clock,
 		},
+		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stationRepo},
 	}
 	router := inboundhttp.NewRouter(handlers, logger)
 

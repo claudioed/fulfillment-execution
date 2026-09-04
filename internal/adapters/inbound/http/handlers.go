@@ -17,19 +17,20 @@ import (
 
 // Handlers wires REST endpoints to use cases.
 type Handlers struct {
-	CreateTask         *usecases.CreateTask
-	ClaimNext          *usecases.ClaimNext
-	RenewLease         *usecases.RenewLease
-	CompleteTask       *usecases.CompleteTask
-	SealPackage        *usecases.SealPackage
-	RunSlam            *usecases.RunSlam
-	GetQueueDepth      *usecases.GetQueueDepth
-	ExpireLeases       *usecases.ExpireLeases
-	RegisterStation    *usecases.RegisterStation
-	GetTasksByOrderRef *usecases.GetTasksByOrderRef
-	CheckInStation     *usecases.CheckInStation
-	CheckOutStation    *usecases.CheckOutStation
-	ArriveAtRebin      *usecases.ArriveAtRebin
+	CreateTask           *usecases.CreateTask
+	ClaimNext            *usecases.ClaimNext
+	RenewLease           *usecases.RenewLease
+	CompleteTask         *usecases.CompleteTask
+	SealPackage          *usecases.SealPackage
+	RunSlam              *usecases.RunSlam
+	GetQueueDepth        *usecases.GetQueueDepth
+	ExpireLeases         *usecases.ExpireLeases
+	RegisterStation      *usecases.RegisterStation
+	GetTasksByOrderRef   *usecases.GetTasksByOrderRef
+	CheckInStation       *usecases.CheckInStation
+	CheckOutStation      *usecases.CheckOutStation
+	ArriveAtRebin        *usecases.ArriveAtRebin
+	GetInstalledCapacity *usecases.GetInstalledCapacity
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
@@ -216,6 +217,23 @@ func (h *Handlers) GetQueueDepthHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, queueDepthResponse{TaskType: taskType, Depth: depth})
+}
+
+// GetInstalledCapacityHandler handles GET /capacity/{capability}. This is
+// the read endpoint workforce-management's CommitShiftPlan calls to
+// enforce plannedHeads against the REAL Station registry, live, rather
+// than trusting a caller-supplied number alone — see ADR-0018. A
+// capability with zero registered stations is not an error: it returns
+// installed: 0, exactly like GetQueueDepthHandler treats an unrecognized
+// taskType as depth 0 rather than a 404.
+func (h *Handlers) GetInstalledCapacityHandler(w http.ResponseWriter, r *http.Request) {
+	capability := chi.URLParam(r, "capability")
+	installed, err := h.GetInstalledCapacity.Execute(r.Context(), shared.Capability(capability))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, installedCapacityResponse{Capability: capability, Installed: installed})
 }
 
 // GetTasksHandler handles GET /tasks?orderRef=<ref>. It requires the
