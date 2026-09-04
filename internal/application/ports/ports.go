@@ -7,6 +7,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/claudioed/fulfillment-execution/internal/domain/consolidation"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
@@ -44,6 +45,16 @@ type StationRepo interface {
 type PackageRepo interface {
 	Save(ctx context.Context, p *pack.Package) error
 	FindById(ctx context.Context, id shared.PackageId) (*pack.Package, error)
+}
+
+// OrderConsolidationRepo persists and retrieves OrderConsolidation
+// aggregates, one per order, tracking Rebin fan-in. FindByOrderRef
+// returns nil (not an error) when no consolidation tracker exists yet for
+// orderRef — the use case treats that as "not yet started" and creates
+// one on first arrival, so no separate "does one exist" call is needed.
+type OrderConsolidationRepo interface {
+	Save(ctx context.Context, oc *consolidation.OrderConsolidation) error
+	FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error)
 }
 
 // EventPublisher publishes domain events raised by use cases.

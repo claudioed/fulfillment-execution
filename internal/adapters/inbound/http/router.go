@@ -52,6 +52,7 @@ func NewRouter(h *Handlers, logger *slog.Logger) *chi.Mux {
 	r.Post("/packages/{id}/slam", h.PostRunSlam)
 	r.Get("/queues/{taskType}/depth", h.GetQueueDepthHandler)
 	r.Post("/tasks/expire-leases", h.PostExpireLeases)
+	r.Post("/rebin/arrivals", h.PostArriveAtRebin)
 
 	return r
 }

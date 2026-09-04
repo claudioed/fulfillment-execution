@@ -8,10 +8,10 @@ description: Pending → Claimed(leased) → Completed, and the lease-expiry edg
 
 # The task lifecycle
 
-A `Task` is a unit of physical work with a type (`PICK`, `PACK`, or `SLAM`), a
-**CPT** deadline that determines its priority, an `orderRef` back to the work
-unit that produced it, and a set of `requiredCapabilities` a station must hold
-to claim it.
+A `Task` is a unit of physical work with a type (`PICK`, `PACK`, `REBIN`, or
+`SLAM`), a **CPT** deadline that determines its priority, an `orderRef` back
+to the work unit that produced it, and a set of `requiredCapabilities` a
+station must hold to claim it.
 
 Its lifecycle has exactly three states and one cycle:
 

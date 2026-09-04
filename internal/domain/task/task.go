@@ -14,9 +14,10 @@ import (
 type Type string
 
 const (
-	Pick Type = "PICK"
-	Pack Type = "PACK"
-	Slam Type = "SLAM"
+	Pick  Type = "PICK"
+	Pack  Type = "PACK"
+	Slam  Type = "SLAM"
+	Rebin Type = "REBIN"
 )
 
 // Status is the lifecycle state of a task.

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
+	"github.com/claudioed/fulfillment-execution/internal/domain/consolidation"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
@@ -266,5 +267,63 @@ func TestProcessedEventsRepo_MarkProcessed_IsIdempotent(t *testing.T) {
 	}
 	if second {
 		t.Fatalf("expected second MarkProcessed call for the same event id to return false")
+	}
+}
+
+// OrderConsolidationRepo's round-trip: Save then FindByOrderRef must
+// preserve both the required and arrived line sets, and an unknown
+// orderRef must return (nil, nil) rather than an error.
+func TestOrderConsolidationRepo_SaveAndFindByOrderRef(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewOrderConsolidationRepo(pool)
+	ctx := context.Background()
+
+	oc := consolidation.New("integration-order-consolidation-1", []string{"line-1", "line-2"})
+	if err := oc.RecordArrival("line-1"); err != nil {
+		t.Fatalf("RecordArrival: %v", err)
+	}
+	if err := repo.Save(ctx, oc); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := repo.FindByOrderRef(ctx, "integration-order-consolidation-1")
+	if err != nil {
+		t.Fatalf("FindByOrderRef: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected to find the saved consolidation")
+	}
+	if got.IsComplete() {
+		t.Fatalf("expected incomplete: only one of two required lines arrived")
+	}
+	if len(got.RequiredLineIds()) != 2 {
+		t.Fatalf("expected 2 required lines to round-trip, got %v", got.RequiredLineIds())
+	}
+	if len(got.ArrivedLineIds()) != 1 || got.ArrivedLineIds()[0] != "line-1" {
+		t.Fatalf("expected arrived lines [line-1] to round-trip, got %v", got.ArrivedLineIds())
+	}
+
+	// Recording the second arrival and re-saving must update the same
+	// row (ON CONFLICT DO UPDATE), not create a duplicate.
+	if err := got.RecordArrival("line-2"); err != nil {
+		t.Fatalf("RecordArrival (line-2): %v", err)
+	}
+	if err := repo.Save(ctx, got); err != nil {
+		t.Fatalf("Save (post-completion): %v", err)
+	}
+	reloaded, err := repo.FindByOrderRef(ctx, "integration-order-consolidation-1")
+	if err != nil {
+		t.Fatalf("FindByOrderRef (post-completion): %v", err)
+	}
+	if !reloaded.IsComplete() {
+		t.Fatalf("expected complete after both lines arrived and were re-saved")
+	}
+
+	unknown, err := repo.FindByOrderRef(ctx, "integration-order-consolidation-does-not-exist")
+	if err != nil {
+		t.Fatalf("FindByOrderRef (unknown): %v", err)
+	}
+	if unknown != nil {
+		t.Fatalf("expected nil for an unknown orderRef, got %+v", unknown)
 	}
 }

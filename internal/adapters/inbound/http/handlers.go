@@ -29,6 +29,7 @@ type Handlers struct {
 	GetTasksByOrderRef *usecases.GetTasksByOrderRef
 	CheckInStation     *usecases.CheckInStation
 	CheckOutStation    *usecases.CheckOutStation
+	ArriveAtRebin      *usecases.ArriveAtRebin
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
@@ -308,4 +309,41 @@ func (h *Handlers) PostCheckOutStation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toStationResponse(s))
+}
+
+// PostArriveAtRebin handles POST /rebin/arrivals: one required line of an
+// order has reached the Rebin path. Once every required line for the
+// order has arrived, this creates the order's PACK task — see
+// usecases.ArriveAtRebin.
+func (h *Handlers) PostArriveAtRebin(w http.ResponseWriter, r *http.Request) {
+	var req arriveAtRebinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequestNoInstance(w, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequestNoInstance(w, msg)
+		return
+	}
+
+	caps := make([]shared.Capability, len(req.PackRequiredCapabilities))
+	for i, c := range req.PackRequiredCapabilities {
+		caps[i] = shared.Capability(c)
+	}
+
+	err := h.ArriveAtRebin.Execute(
+		r.Context(),
+		shared.OrderRef(req.OrderRef),
+		req.LineId,
+		req.RequiredLineIds,
+		shared.NewCPT(req.PackCPT),
+		shared.NewCapabilitySet(caps...),
+		req.PackFragile,
+		req.PackGiftWrap,
+	)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

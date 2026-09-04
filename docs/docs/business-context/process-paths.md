@@ -1,15 +1,15 @@
 ---
 id: process-paths
-title: Process paths — Pick, Pack, SLAM
+title: Process paths — Pick, Pack, Rebin, SLAM
 sidebar_label: Process paths
 sidebar_position: 2
-description: What Pick, Pack and SLAM actually are on a warehouse floor, and why they are modelled as named task types (queues) rather than as steps in a workflow.
+description: What Pick, Pack, Rebin and SLAM actually are on a warehouse floor, and why they are modelled as named task types (queues) rather than as steps in a workflow.
 ---
 
-# Process paths — Pick, Pack, SLAM
+# Process paths — Pick, Pack, Rebin, SLAM
 
-A **process path** is one of Pick, Pack, or SLAM. In this model they are
-**named task types — that is, queues — not steps in a workflow**. That
+A **process path** is one of Pick, Pack, Rebin, or SLAM. In this model they
+are **named task types — that is, queues — not steps in a workflow**. That
 distinction is small to write down and large in consequence, so it is worth
 being precise about both what the paths physically are and why they are
 modelled this way.
@@ -49,10 +49,42 @@ aggregate via `POST /tasks/{id}/seal-package`. The invariant that matters is
 that **a carton cannot be sealed without scanned contents** — sealing an
 unverified box is precisely how the wrong item ships.
 
+For a multi-line order, this `PACK` task is not created directly by the
+`WorkReleased` consumer — it is created by `ArriveAtRebin` once every
+required line has converged at Rebin (see below). For a single-line order
+there is nothing to converge, so its `PACK` task is created the moment its
+one line arrives.
+
 Note that **cartonization** (choosing the box size) is *not* implemented here.
 The platform's strategic guidance is to model cartonization as its own Generic
 Subdomain that both WMS and WES call into, rather than duplicating box-selection
 logic in two places.
+
+### Rebin — order consolidation
+
+A multi-line order picked across different zones or pods produces
+independent pick confirmations at different times. Rebin is the queue and
+physical holding point (a bin, a chute) where those independently-picked
+lines wait until every line required for the order has arrived — only then
+can Pack begin, because Pack needs the whole order's contents together, not
+one line at a time.
+
+In this service: a `REBIN` task follows the identical claim/lease/complete
+rules as every other task type — nothing about `Task` itself knows this is
+a consolidation point. The fan-in logic lives in a separate small aggregate,
+`internal/domain/consolidation.OrderConsolidation`, which tracks which of an
+order's required lines have arrived. `POST /rebin/arrivals` records one
+line's arrival; once `OrderConsolidation.IsComplete()` becomes true, the
+`ArriveAtRebin` use case creates the order's `PACK` task by calling the
+existing `CreateTask` use case — the same reuse principle documented on
+`CreateTask` itself. See [ADR-0016](../adr/0016-rebin-and-order-consolidation.md)
+for the full reasoning, including why this stayed a small aggregate inside
+this bounded context rather than becoming a new service.
+
+A single-line order (order-management's `FulfillmentClass.SINGLE`, per that
+repository's ADR-0008) has exactly one required line, so it "completes"
+immediately on that line's arrival — no special-casing needed, since
+completeness is just `len(arrived) == len(required)` for any line count.
 
 ### SLAM — Scan, Label, Apply, Manifest
 
@@ -97,10 +129,12 @@ it by counting instances parked at a particular node.
 A multi-line order picked across three zones by three associates produces
 three independent pick confirmations at different times. Packing cannot start
 until all required lines have arrived. That fan-in — `OrderConvergence` in the
-reference model — is a *synchronisation* concern, and it belongs upstream,
-where there is visibility into partial completion across an order. Baking a
-linear Pick→Pack ordering into this service's task model would quietly assume
-a convergence guarantee this context does not have and cannot enforce.
+reference model — is a *synchronisation* concern. It is now handled by the
+Rebin path and the `OrderConsolidation` aggregate described above (see
+[ADR-0016](../adr/0016-rebin-and-order-consolidation.md)); baking a linear
+Pick→Pack ordering directly into `Task` itself would still have been wrong —
+`OrderConsolidation` exists precisely so the fan-in guarantee is explicit,
+observable state rather than an assumption baked into task sequencing.
 
 **4. Independence is what makes each path's dispatch policy separately
 tunable.** A change to how Pack tasks are prioritised should not require
