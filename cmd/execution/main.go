@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/filecatalog"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
@@ -78,6 +80,16 @@ func run() error {
 	httpAddr := getenv("HTTP_ADDR", ":8080")
 	databaseURL := os.Getenv("DATABASE_URL")
 	kafkaBrokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
+
+	// The process-path catalogue is loaded and validated once at boot,
+	// before anything else stands up — a missing or malformed catalogue
+	// file must stop this service from starting at all, never fall back
+	// to a partial/empty catalogue (see filecatalog.Load's doc comment).
+	catalogue, err := filecatalog.Load(getenv("PATH_CATALOGUE_FILE", "/etc/fulfillment-execution/process-paths.yaml"))
+	if err != nil {
+		return fmt.Errorf("failed to load the process-path catalogue: %w", err)
+	}
+	logger.Info("process-path catalogue loaded", "paths", catalogue.Ids())
 
 	var (
 		taskRepo          ports.TaskRepo
@@ -158,7 +170,7 @@ func run() error {
 
 	srv := &http.Server{Addr: httpAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 
-	consumer := inboundkafka.NewConsumer(kafkaBrokers, workReleasedTopic, createTask, processedEvents, logger)
+	consumer := inboundkafka.NewConsumer(kafkaBrokers, workReleasedTopic, createTask, processedEvents, catalogue, logger)
 	defer func() { _ = consumer.Close() }()
 	if kafkaPublisher != nil {
 		defer func() { _ = kafkaPublisher.Close() }()

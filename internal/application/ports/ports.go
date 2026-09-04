@@ -9,6 +9,7 @@ import (
 
 	"github.com/claudioed/fulfillment-execution/internal/domain/consolidation"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
+	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
@@ -55,6 +56,16 @@ type PackageRepo interface {
 type OrderConsolidationRepo interface {
 	Save(ctx context.Context, oc *consolidation.OrderConsolidation) error
 	FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error)
+}
+
+// PathCatalogue is the outbound port for the fleet's declared process-path
+// catalogue (see warehouse-infra's config/process-paths/*.yaml, loaded by
+// the filecatalog adapter). It replaces the WorkReleased consumer's old
+// path_id-prefix-convention guess with a real, validated lookup: an
+// unrecognized path_id is now a hard error, not a silent default to
+// task.Pick. See the process-path-catalogue-as-configuration ADR.
+type PathCatalogue interface {
+	Lookup(id string) (pathcatalog.PathDefinition, error)
 }
 
 // EventPublisher publishes domain events raised by use cases.
