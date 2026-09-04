@@ -76,7 +76,7 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			attrs := []any{
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", sanitizeForLog(r.URL.Path),
 				"status", ww.Status(),
 				"duration_ms", time.Since(start).Milliseconds(),
 				"bytes", ww.BytesWritten(),
@@ -89,6 +89,16 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			}
 		})
 	}
+}
+
+// sanitizeForLog strips CR/LF from an attacker-controlled value (here,
+// the raw request path) before it is written to a log line. Without this,
+// a crafted path segment containing an encoded newline could forge a fake
+// log entry that appears to be a separate, legitimate line (CWE-117 log
+// injection) once the log record reaches a downstream viewer/aggregator
+// that doesn't preserve slog's JSON string escaping.
+func sanitizeForLog(s string) string {
+	return strings.NewReplacer("\n", "", "\r", "").Replace(s)
 }
 
 // corsMiddleware allows the warehouse-console browser SPA (and this
