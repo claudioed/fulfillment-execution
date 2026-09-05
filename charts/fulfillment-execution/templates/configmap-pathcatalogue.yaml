@@ -1,0 +1,11 @@
+{{- if and .Values.pathCatalogue.enabled (not .Values.pathCatalogue.existingConfigMap) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fulfillment-execution.fullname" . }}-path-catalogue
+  labels:
+    {{- include "fulfillment-execution.labels" . | nindent 4 }}
+data:
+  process-paths.yaml: |
+{{- .Values.pathCatalogue.content | nindent 4 }}
+{{- end }}
