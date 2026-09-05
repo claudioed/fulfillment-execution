@@ -35,3 +35,15 @@ func (r *StationRepo) FindById(_ context.Context, id shared.StationId) (*station
 	}
 	return s, nil
 }
+
+func (r *StationRepo) CountByCapability(_ context.Context, capability shared.Capability) (int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, s := range r.stations {
+		if s.Capabilities().Contains(capability) {
+			count++
+		}
+	}
+	return count, nil
+}

@@ -3,10 +3,13 @@ package http
 import (
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/cors"
 	"github.com/riandyrn/otelchi"
 
 	"github.com/claudioed/fulfillment-execution/internal/observability"
@@ -34,17 +37,23 @@ func NewRouter(h *Handlers, logger *slog.Logger) *chi.Mux {
 	r.Use(observability.HTTPServerMetrics())
 	r.Use(RequestLogger(logger))
 	r.Use(middleware.Recoverer)
+	r.Use(corsMiddleware())
 
 	r.Get("/healthz", h.GetHealthz)
 	r.Post("/stations", h.PostRegisterStation)
 	r.Post("/tasks", h.PostTask)
+	r.Get("/tasks", h.GetTasksHandler)
 	r.Post("/stations/{stationId}/claim-next", h.PostClaimNext)
+	r.Post("/stations/{stationId}/check-in", h.PostCheckInStation)
+	r.Post("/stations/{stationId}/check-out", h.PostCheckOutStation)
 	r.Post("/tasks/{id}/renew-lease", h.PostRenewLease)
 	r.Post("/tasks/{id}/complete", h.PostCompleteTask)
 	r.Post("/tasks/{id}/seal-package", h.PostSealPackage)
 	r.Post("/packages/{id}/slam", h.PostRunSlam)
 	r.Get("/queues/{taskType}/depth", h.GetQueueDepthHandler)
+	r.Get("/capacity/{capability}", h.GetInstalledCapacityHandler)
 	r.Post("/tasks/expire-leases", h.PostExpireLeases)
+	r.Post("/rebin/arrivals", h.PostArriveAtRebin)
 
 	return r
 }
@@ -67,7 +76,7 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			attrs := []any{
 				"method", r.Method,
-				"path", r.URL.Path,
+				"path", sanitizeForLog(r.URL.Path),
 				"status", ww.Status(),
 				"duration_ms", time.Since(start).Milliseconds(),
 				"bytes", ww.BytesWritten(),
@@ -80,4 +89,33 @@ func RequestLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 			}
 		})
 	}
+}
+
+// sanitizeForLog strips CR/LF from an attacker-controlled value (here,
+// the raw request path) before it is written to a log line. Without this,
+// a crafted path segment containing an encoded newline could forge a fake
+// log entry that appears to be a separate, legitimate line (CWE-117 log
+// injection) once the log record reaches a downstream viewer/aggregator
+// that doesn't preserve slog's JSON string escaping.
+func sanitizeForLog(s string) string {
+	return strings.NewReplacer("\n", "", "\r", "").Replace(s)
+}
+
+// corsMiddleware allows the warehouse-console browser SPA (and this
+// service's own future MFE remote dev origin) to call this API directly
+// from the browser. Static-bearer-key auth, not cookies, so credentials
+// are never needed here. CORS_ALLOWED_ORIGINS overrides the local-dev
+// default (comma-separated) for staging/prod deployments.
+func corsMiddleware() func(http.Handler) http.Handler {
+	origins := []string{"http://localhost:5173", "http://localhost:5184"}
+	if v := os.Getenv("CORS_ALLOWED_ORIGINS"); v != "" {
+		origins = strings.Split(v, ",")
+	}
+	return cors.Handler(cors.Options{
+		AllowedOrigins:   origins,
+		AllowedMethods:   []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodDelete},
+		AllowedHeaders:   []string{"Content-Type", "Authorization"},
+		AllowCredentials: false,
+		MaxAge:           300,
+	})
 }

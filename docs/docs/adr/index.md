@@ -104,3 +104,9 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0010](./0010-package-segregation-and-sort-lane.md) | Live per-item DOT hazard classification, same-package segregation, and SortLane | Accepted |
 | [0011](./0011-gift-wrap-handling-flag.md) | Gift wrap handling flag carried on Task and Package | Accepted |
 | [0012](./0012-analytical-data-product.md) | Per-service analytical data product (report) via a separate analytics topic | Accepted |
+| [0013](./0013-fulfillment-mfe-console-adoption.md) | Adopt the fleet's micro-frontend console architecture — `fulfillment-mfe`, `GET /tasks?orderRef=`, and CORS | Accepted |
+| [0014](./0014-labor-performance-integration-hooks.md) | Labor-performance integration hooks — check-in/check-out wiring and `TaskCompleted` enrichment | Accepted |
+| [0015](./0015-wcs-equipment-anti-corruption-seam.md) | Structural anti-corruption-layer seam for the (unbuilt) WCS tier | Accepted |
+| [0016](./0016-rebin-and-order-consolidation.md) | REBIN task type and OrderConsolidation, kept inside fulfillment-execution | Accepted |
+| [0017](./0017-process-path-catalogue-as-configuration.md) | Process-path catalogue as configuration, replacing the path_id-prefix guess | Accepted |
+| [0018](./0018-installed-capacity-read-endpoint.md) | Installed-capacity read endpoint for workforce-management's capacity ceiling | Accepted |

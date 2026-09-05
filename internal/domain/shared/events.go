@@ -116,3 +116,28 @@ type PackageDiverted struct {
 func NewPackageDiverted(id PackageId, at time.Time) PackageDiverted {
 	return PackageDiverted{base: base{Name: "PackageDiverted", At: at}, PackageId: id}
 }
+
+// ItemArrivedAtRebin is raised when one required line of an order reaches
+// the Rebin path — the consolidation fan-in fact. OrderRef identifies the
+// order; LineId identifies which required line arrived (see
+// consolidation.OrderConsolidation).
+type ItemArrivedAtRebin struct {
+	base
+	OrderRef OrderRef
+	LineId   string
+}
+
+func NewItemArrivedAtRebin(orderRef OrderRef, lineId string, at time.Time) ItemArrivedAtRebin {
+	return ItemArrivedAtRebin{base: base{Name: "ItemArrivedAtRebin", At: at}, OrderRef: orderRef, LineId: lineId}
+}
+
+// OrderConsolidated is raised when every required line for an order has
+// arrived at Rebin — the trigger for creating that order's PACK task.
+type OrderConsolidated struct {
+	base
+	OrderRef OrderRef
+}
+
+func NewOrderConsolidated(orderRef OrderRef, at time.Time) OrderConsolidated {
+	return OrderConsolidated{base: base{Name: "OrderConsolidated", At: at}, OrderRef: orderRef}
+}

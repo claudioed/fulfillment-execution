@@ -21,6 +21,7 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 	tasks := memory.NewTaskRepo()
 	stations := memory.NewStationRepo()
 	packages := memory.NewPackageRepo()
+	consolidations := memory.NewOrderConsolidationRepo()
 	publisher := events.NewBufferedPublisher()
 	clock := memory.NewFixedClock(time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC))
 
@@ -31,16 +32,28 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 	}
 	newPackageId := func() shared.PackageId { return shared.PackageId("pkg-1") }
 
+	createTask := &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId}
+
 	h := &http.Handlers{
-		CreateTask:      &usecases.CreateTask{Tasks: tasks, Publisher: publisher, Clock: clock, NewId: newTaskId},
-		ClaimNext:       &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
-		RenewLease:      &usecases.RenewLease{Tasks: tasks, Clock: clock},
-		CompleteTask:    &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
-		SealPackage:     &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
-		RunSlam:         &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
-		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: tasks},
-		ExpireLeases:    &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
-		RegisterStation: &usecases.RegisterStation{Stations: stations, Publisher: publisher},
+		CreateTask:         createTask,
+		ClaimNext:          &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock},
+		RenewLease:         &usecases.RenewLease{Tasks: tasks, Clock: clock},
+		CompleteTask:       &usecases.CompleteTask{Tasks: tasks, Publisher: publisher, Clock: clock},
+		SealPackage:        &usecases.SealPackage{Tasks: tasks, Packages: packages, Publisher: publisher, Clock: clock, NewId: newPackageId},
+		RunSlam:            &usecases.RunSlam{Packages: packages, Publisher: publisher, Clock: clock},
+		GetQueueDepth:      &usecases.GetQueueDepth{Tasks: tasks},
+		ExpireLeases:       &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
+		RegisterStation:    &usecases.RegisterStation{Stations: stations, Publisher: publisher},
+		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: tasks},
+		CheckInStation:     &usecases.CheckInStation{Stations: stations},
+		CheckOutStation:    &usecases.CheckOutStation{Stations: stations},
+		ArriveAtRebin: &usecases.ArriveAtRebin{
+			Consolidations: consolidations,
+			CreateTask:     createTask,
+			Publisher:      publisher,
+			Clock:          clock,
+		},
+		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stations},
 	}
 	return http.NewRouter(h, nil), tasks, stations, packages, clock
 }
@@ -417,6 +430,135 @@ func TestGetQueueDepth(t *testing.T) {
 	}
 }
 
+// TestGetInstalledCapacity is the read endpoint workforce-management's
+// CommitShiftPlan calls to enforce plannedHeads against the real Station
+// registry — see ADR-0018.
+func TestGetInstalledCapacity(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	doJSON(t, srv, stdhttp.MethodPost, "/stations", map[string]any{
+		"stationId": "s1", "capabilities": []string{"pick"},
+	})
+	doJSON(t, srv, stdhttp.MethodPost, "/stations", map[string]any{
+		"stationId": "s2", "capabilities": []string{"pick", "pack"},
+	})
+
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/capacity/pick", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Capability string `json:"capability"`
+		Installed  int    `json:"installed"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Capability != "pick" || resp.Installed != 2 {
+		t.Fatalf("expected capability pick, installed 2, got %+v", resp)
+	}
+}
+
+// TestGetInstalledCapacity_UnregisteredCapability_ReturnsZeroNotError proves
+// this endpoint mirrors GetQueueDepthHandler's own contract: an
+// unrecognized capability is not a 404, it is a real answer of zero.
+func TestGetInstalledCapacity_UnregisteredCapability_ReturnsZeroNotError(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/capacity/rebin", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Installed int `json:"installed"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.Installed != 0 {
+		t.Fatalf("expected installed 0, got %d", resp.Installed)
+	}
+}
+
+func TestGetTasksByOrderRef_ReturnsMatchingTasks(t *testing.T) {
+	srv, _, _, _, clock := newTestServer()
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PACK", "cpt": clock.Now().Add(2 * time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pack"},
+	})
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "SLAM", "cpt": clock.Now().Add(3 * time.Hour), "orderRef": "order-2", "requiredCapabilities": []string{"slam"},
+	})
+
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/tasks?orderRef=order-1", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp []struct {
+		Id       string `json:"id"`
+		Type     string `json:"type"`
+		Status   string `json:"status"`
+		OrderRef string `json:"orderRef"`
+		Fragile  bool   `json:"fragile"`
+		GiftWrap bool   `json:"giftWrap"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 2 {
+		t.Fatalf("expected 2 tasks for order-1, got %d: %+v", len(resp), resp)
+	}
+	for _, tk := range resp {
+		if tk.OrderRef != "order-1" {
+			t.Fatalf("expected only order-1 tasks, got %+v", tk)
+		}
+	}
+}
+
+func TestGetTasksByOrderRef_MissingParamReturns400(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/tasks", nil)
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestGetTasksByOrderRef_UnknownOrderRefReturnsEmptyArray(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/tasks?orderRef=does-not-exist", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp []any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 0 {
+		t.Fatalf("expected empty array, got %v", resp)
+	}
+}
+
+func TestGetTasksByOrderRef_SurfacesLeaseStationId(t *testing.T) {
+	srv, _, stations, _, clock := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Hour), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/claim-next", map[string]any{"taskType": "PICK"})
+
+	rec := doJSON(t, srv, stdhttp.MethodGet, "/tasks?orderRef=order-1", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp []struct {
+		LeaseStationId *string `json:"leaseStationId"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp) != 1 || resp[0].LeaseStationId == nil || *resp[0].LeaseStationId != "s1" {
+		t.Fatalf("expected leaseStationId s1, got %+v", resp)
+	}
+}
+
 func TestPostExpireLeases(t *testing.T) {
 	srv, _, stations, _, clock := newTestServer()
 	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
@@ -560,4 +702,214 @@ func TestPostRegisterStation_ThenClaimNextSucceeds(t *testing.T) {
 	if rec.Code != stdhttp.StatusOK {
 		t.Fatalf("expected 200 claiming against freshly registered station, got %d: %s", rec.Code, rec.Body.String())
 	}
+}
+
+func TestPostCheckInStation_Success(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-1"})
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Id       string `json:"id"`
+		Occupied bool   `json:"occupied"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Id != "s1" || !resp.Occupied {
+		t.Fatalf("expected s1 occupied, got %+v", resp)
+	}
+
+	found, _ := stations.FindById(context.TODO(), "s1")
+	if found == nil || !found.IsOccupied() {
+		t.Fatalf("expected the check-in to be persisted")
+	}
+}
+
+func TestPostCheckInStation_MissingOccupantId_Returns400(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{})
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("expected 400 for missing occupantId, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostCheckInStation_UnknownStation_Returns404(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/does-not-exist/check-in", map[string]any{"occupantId": "worker-1"})
+	if rec.Code != stdhttp.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusNotFound,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found",
+		"/stations/does-not-exist/check-in")
+}
+
+// Domain invariant surfaced through HTTP: one occupant at a time.
+func TestPostCheckInStation_SecondOccupant_Returns409(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-1"})
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-2"})
+	if rec.Code != stdhttp.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusConflict,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/station-occupied",
+		"/stations/s1/check-in")
+}
+
+func TestPostCheckOutStation_Success(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+	doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-in", map[string]any{"occupantId": "worker-1"})
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-out", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Occupied bool `json:"occupied"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if resp.Occupied {
+		t.Fatalf("expected station vacant after check-out, got %+v", resp)
+	}
+
+	found, _ := stations.FindById(context.TODO(), "s1")
+	if found == nil || found.IsOccupied() {
+		t.Fatalf("expected the check-out to be persisted")
+	}
+}
+
+func TestPostCheckOutStation_UnknownStation_Returns404(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/does-not-exist/check-out", nil)
+	if rec.Code != stdhttp.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusNotFound,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found",
+		"/stations/does-not-exist/check-out")
+}
+
+// Domain invariant surfaced through HTTP: check-out on an empty station.
+func TestPostCheckOutStation_NotOccupied_Returns409(t *testing.T) {
+	srv, _, stations, _, _ := newTestServer()
+	_ = stations.Save(context.TODO(), station.New("s1", shared.NewCapabilitySet("pick")))
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/stations/s1/check-out", nil)
+	if rec.Code != stdhttp.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusConflict,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/station-not-occupied",
+		"/stations/s1/check-out")
+}
+
+func TestPostArriveAtRebin_SingleLineOrderCreatesPackTaskImmediately(t *testing.T) {
+	srv, tasks, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", map[string]any{
+		"orderRef":                 "order-1",
+		"lineId":                   "line-1",
+		"requiredLineIds":          []string{"line-1"},
+		"packCpt":                  time.Now().Add(time.Hour),
+		"packRequiredCapabilities": []string{"pack"},
+	})
+	if rec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	packTasks, _ := tasks.FindByOrderRef(context.TODO(), "order-1")
+	if len(packTasks) != 1 {
+		t.Fatalf("expected exactly 1 PACK task for the single-line order, got %d", len(packTasks))
+	}
+}
+
+func TestPostArriveAtRebin_MultiLineOrderWaitsForAllArrivals(t *testing.T) {
+	srv, tasks, _, _, _ := newTestServer()
+	body := func(lineId string) map[string]any {
+		return map[string]any{
+			"orderRef":                 "order-1",
+			"lineId":                   lineId,
+			"requiredLineIds":          []string{"line-1", "line-2"},
+			"packCpt":                  time.Now().Add(time.Hour),
+			"packRequiredCapabilities": []string{"pack"},
+		}
+	}
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", body("line-1"))
+	if rec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204 on first arrival, got %d: %s", rec.Code, rec.Body.String())
+	}
+	packTasks, _ := tasks.FindByOrderRef(context.TODO(), "order-1")
+	if len(packTasks) != 0 {
+		t.Fatalf("expected no PACK task before both lines arrive, got %d", len(packTasks))
+	}
+
+	rec = doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", body("line-2"))
+	if rec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204 on second arrival, got %d: %s", rec.Code, rec.Body.String())
+	}
+	packTasks, _ = tasks.FindByOrderRef(context.TODO(), "order-1")
+	if len(packTasks) != 1 {
+		t.Fatalf("expected exactly 1 PACK task once both lines have arrived, got %d", len(packTasks))
+	}
+}
+
+func TestPostArriveAtRebin_MissingOrderRef_Returns400(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", map[string]any{
+		"lineId":                   "line-1",
+		"requiredLineIds":          []string{"line-1"},
+		"packCpt":                  time.Now().Add(time.Hour),
+		"packRequiredCapabilities": []string{"pack"},
+	})
+	if rec.Code != stdhttp.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// Domain invariant surfaced through HTTP: an arrival for a line outside
+// the order's established required set is rejected as 422, not silently
+// accepted or treated as a data-integrity crash.
+func TestPostArriveAtRebin_UnknownLine_Returns422(t *testing.T) {
+	srv, _, _, _, _ := newTestServer()
+	base := map[string]any{
+		"orderRef":                 "order-1",
+		"requiredLineIds":          []string{"line-1"},
+		"packCpt":                  time.Now().Add(time.Hour),
+		"packRequiredCapabilities": []string{"pack"},
+	}
+
+	firstArrival := map[string]any{}
+	for k, v := range base {
+		firstArrival[k] = v
+	}
+	firstArrival["lineId"] = "line-1"
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", firstArrival)
+	if rec.Code != stdhttp.StatusNoContent {
+		t.Fatalf("expected 204 on first arrival, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	unknownArrival := map[string]any{}
+	for k, v := range base {
+		unknownArrival[k] = v
+	}
+	unknownArrival["lineId"] = "line-not-in-order"
+	rec = doJSON(t, srv, stdhttp.MethodPost, "/rebin/arrivals", unknownArrival)
+	if rec.Code != stdhttp.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+	assertProblemDetails(t, rec, stdhttp.StatusUnprocessableEntity,
+		"https://errors.fulfillment-execution.warehouse-systems.dev/rebin-unknown-line",
+		"/rebin/arrivals")
 }

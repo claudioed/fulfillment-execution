@@ -34,8 +34,8 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 	}
 
 	_, err := r.pool.Exec(ctx, `
-		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE SET
 			task_type = EXCLUDED.task_type,
 			status = EXCLUDED.status,
@@ -45,15 +45,16 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 			lease_station_id = EXCLUDED.lease_station_id,
 			lease_expiry = EXCLUDED.lease_expiry,
 			fragile = EXCLUDED.fragile,
-			gift_wrap = EXCLUDED.gift_wrap
+			gift_wrap = EXCLUDED.gift_wrap,
+			claimed_at = EXCLUDED.claimed_at
 	`, string(t.Id()), string(t.Type()), string(t.Status()), t.CPT().Time(), string(t.OrderRef()),
-		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry, t.Fragile(), t.GiftWrap())
+		capabilitiesToSlice(t.RequiredCapabilities()), leaseStationId, leaseExpiry, t.Fragile(), t.GiftWrap(), t.ClaimedAt())
 	return err
 }
 
 func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
 	row := r.pool.QueryRow(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
 		FROM tasks WHERE id = $1
 	`, string(id))
 	t, err := scanTask(row)
@@ -65,7 +66,7 @@ func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, 
 
 func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, now time.Time) ([]*task.Task, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
 		FROM tasks
 		WHERE task_type = $1
 		  AND (status = 'PENDING' OR (status = 'CLAIMED' AND lease_expiry <= $2))
@@ -80,7 +81,7 @@ func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, 
 
 func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
 		FROM tasks WHERE status = 'CLAIMED'
 	`)
 	if err != nil {
@@ -98,6 +99,18 @@ func (r *TaskRepo) CountByTypeAndStatus(ctx context.Context, taskType task.Type,
 	return count, err
 }
 
+func (r *TaskRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
+		FROM tasks WHERE order_ref = $1
+	`, string(orderRef))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTasks(rows)
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }
@@ -111,8 +124,9 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		leaseExpiry                    *time.Time
 		fragile                        bool
 		giftWrap                       bool
+		claimedAt                      *time.Time
 	)
-	if err := row.Scan(&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap); err != nil {
+	if err := row.Scan(&id, &taskType, &status, &cpt, &orderRef, &requiredCapabilities, &leaseStationId, &leaseExpiry, &fragile, &giftWrap, &claimedAt); err != nil {
 		return nil, err
 	}
 
@@ -131,6 +145,7 @@ func scanTask(row rowScanner) (*task.Task, error) {
 		lease,
 		fragile,
 		giftWrap,
+		claimedAt,
 	), nil
 }
 

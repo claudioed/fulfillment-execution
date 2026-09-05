@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -21,6 +20,7 @@ import (
 
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
+	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
@@ -66,21 +66,34 @@ type Consumer struct {
 	Reader     *kafkago.Reader
 	CreateTask *usecases.CreateTask
 	Processed  ports.ProcessedEvents
+	Catalogue  ports.PathCatalogue
 	Logger     *slog.Logger
 }
 
 // NewConsumer constructs a Consumer reading topic from brokers as part of
 // consumer group "fulfillment-execution".
-func NewConsumer(brokers []string, topic string, createTask *usecases.CreateTask, processed ports.ProcessedEvents, logger *slog.Logger) *Consumer {
+func NewConsumer(brokers []string, topic string, createTask *usecases.CreateTask, processed ports.ProcessedEvents, catalogue ports.PathCatalogue, logger *slog.Logger) *Consumer {
+	return newConsumer(brokers, topic, "fulfillment-execution", kafkago.FirstOffset, createTask, processed, catalogue, logger)
+}
+
+// NewConsumerWithGroup constructs an isolated Consumer. Its first assignment
+// begins at the latest offset, so a system-test database is populated only by
+// events released after the test's service process is ready.
+func NewConsumerWithGroup(brokers []string, topic, groupID string, createTask *usecases.CreateTask, processed ports.ProcessedEvents, catalogue ports.PathCatalogue, logger *slog.Logger) *Consumer {
+	return newConsumer(brokers, topic, groupID, kafkago.LastOffset, createTask, processed, catalogue, logger)
+}
+
+func newConsumer(brokers []string, topic, groupID string, startOffset int64, createTask *usecases.CreateTask, processed ports.ProcessedEvents, catalogue ports.PathCatalogue, logger *slog.Logger) *Consumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: brokers,
-		Topic:   topic,
-		GroupID: "fulfillment-execution",
+		Brokers:     brokers,
+		Topic:       topic,
+		GroupID:     groupID,
+		StartOffset: startOffset,
 	})
-	return &Consumer{Reader: reader, CreateTask: createTask, Processed: processed, Logger: logger}
+	return &Consumer{Reader: reader, CreateTask: createTask, Processed: processed, Catalogue: catalogue, Logger: logger}
 }
 
 // Run reads and handles messages until ctx is cancelled or the reader
@@ -159,8 +172,18 @@ func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 		return nil
 	}
 
-	taskType := deriveTaskType(env.Data.PathId)
-	required := requiredCapabilities(taskType)
+	pathDef, err := c.Catalogue.Lookup(env.Data.PathId)
+	if err != nil {
+		// A path_id this catalogue does not recognize is a hard error —
+		// NOT a silent default to task.Pick. The old prefix-guessing
+		// convention (documented as a "known simplification" that this
+		// catalogue retires) meant a malformed path_id quietly became a
+		// Pick task; that was a real, acknowledged bug, not a feature.
+		return fmt.Errorf("kafka: path_id %q not found in the process-path catalogue: %w", env.Data.PathId, err)
+	}
+
+	taskType := task.Type(pathDef.Id)
+	required := shared.NewCapabilitySet(capabilitiesOf(pathDef)...)
 	orderRef := shared.OrderRef(env.Data.WorkUnitId)
 
 	if _, err := c.CreateTask.Execute(ctx, taskType, shared.NewCPT(env.Data.CPT), orderRef, required, env.Data.Fragile, env.Data.GiftWrap); err != nil {
@@ -169,32 +192,12 @@ func (c *Consumer) HandleMessage(ctx context.Context, raw []byte) error {
 	return nil
 }
 
-// deriveTaskType maps a path_id to a task type by prefix convention
-// ("pick-*", "pack-*", "slam-*"), defaulting to Pick when no prefix matches.
-// path_id does not carry the task type in general — this prefix convention
-// is a known simplification for this integration (see README).
-func deriveTaskType(pathId string) task.Type {
-	switch {
-	case strings.HasPrefix(pathId, "pick-"):
-		return task.Pick
-	case strings.HasPrefix(pathId, "pack-"):
-		return task.Pack
-	case strings.HasPrefix(pathId, "slam-"):
-		return task.Slam
-	default:
-		return task.Pick
+// capabilitiesOf converts a catalogue path definition's declared
+// capability strings into the domain's shared.Capability type.
+func capabilitiesOf(def pathcatalog.PathDefinition) []shared.Capability {
+	out := make([]shared.Capability, len(def.RequiredCapabilities))
+	for i, c := range def.RequiredCapabilities {
+		out[i] = shared.Capability(c)
 	}
-}
-
-// requiredCapabilities maps a task type to the capability names Workforce
-// Management uses.
-func requiredCapabilities(t task.Type) shared.CapabilitySet {
-	switch t {
-	case task.Pack:
-		return shared.NewCapabilitySet("pack")
-	case task.Slam:
-		return shared.NewCapabilitySet("slam")
-	default:
-		return shared.NewCapabilitySet("pick")
-	}
+	return out
 }

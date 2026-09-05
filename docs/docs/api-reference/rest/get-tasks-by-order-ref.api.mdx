@@ -1,0 +1,71 @@
+---
+id: get-tasks-by-order-ref
+title: "Look up every task recorded for an order reference"
+description: "Read-only query tracing an order-management order back to the Pick/Pack/SLAM tasks this service created for it — the endpoint that backs a cross-service console screen answering 'what tasks has fulfillment-execution created/completed for order X'. Returns every task whose `orderRef` matches, normally one PICK/PACK/SLAM leg each; a leg may appear more than once if it was retried (e.g. a new task created after a prior one's lease expired without completion), so treat the response as the full set of tasks for the order, not a single result per process path. An unrecognized `orderRef` is not an error — it returns an empty array, the same convention `GET /queues/{taskType}/depth` uses for an unknown `taskType`."
+sidebar_label: "Look up every task recorded for an order reference"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Look up every task recorded for an order reference"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/tasks"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+Read-only query tracing an order-management order back to the Pick/Pack/SLAM tasks this service created for it — the endpoint that backs a cross-service console screen answering "what tasks has fulfillment-execution created/completed for order X". Returns every task whose `orderRef` matches, normally one PICK/PACK/SLAM leg each; a leg may appear more than once if it was retried (e.g. a new task created after a prior one's lease expired without completion), so treat the response as the full set of tasks for the order, not a single result per process path. An unrecognized `orderRef` is not an error — it returns an empty array, the same convention `GET /queues/{taskType}/depth` uses for an unknown `taskType`.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-tasks-by-order-ref.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-tasks-by-order-ref.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-tasks-by-order-ref.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

@@ -17,15 +17,20 @@ import (
 
 // Handlers wires REST endpoints to use cases.
 type Handlers struct {
-	CreateTask      *usecases.CreateTask
-	ClaimNext       *usecases.ClaimNext
-	RenewLease      *usecases.RenewLease
-	CompleteTask    *usecases.CompleteTask
-	SealPackage     *usecases.SealPackage
-	RunSlam         *usecases.RunSlam
-	GetQueueDepth   *usecases.GetQueueDepth
-	ExpireLeases    *usecases.ExpireLeases
-	RegisterStation *usecases.RegisterStation
+	CreateTask           *usecases.CreateTask
+	ClaimNext            *usecases.ClaimNext
+	RenewLease           *usecases.RenewLease
+	CompleteTask         *usecases.CompleteTask
+	SealPackage          *usecases.SealPackage
+	RunSlam              *usecases.RunSlam
+	GetQueueDepth        *usecases.GetQueueDepth
+	ExpireLeases         *usecases.ExpireLeases
+	RegisterStation      *usecases.RegisterStation
+	GetTasksByOrderRef   *usecases.GetTasksByOrderRef
+	CheckInStation       *usecases.CheckInStation
+	CheckOutStation      *usecases.CheckOutStation
+	ArriveAtRebin        *usecases.ArriveAtRebin
+	GetInstalledCapacity *usecases.GetInstalledCapacity
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
@@ -214,6 +219,48 @@ func (h *Handlers) GetQueueDepthHandler(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, queueDepthResponse{TaskType: taskType, Depth: depth})
 }
 
+// GetInstalledCapacityHandler handles GET /capacity/{capability}. This is
+// the read endpoint workforce-management's CommitShiftPlan calls to
+// enforce plannedHeads against the REAL Station registry, live, rather
+// than trusting a caller-supplied number alone — see ADR-0018. A
+// capability with zero registered stations is not an error: it returns
+// installed: 0, exactly like GetQueueDepthHandler treats an unrecognized
+// taskType as depth 0 rather than a 404.
+func (h *Handlers) GetInstalledCapacityHandler(w http.ResponseWriter, r *http.Request) {
+	capability := chi.URLParam(r, "capability")
+	installed, err := h.GetInstalledCapacity.Execute(r.Context(), shared.Capability(capability))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, installedCapacityResponse{Capability: capability, Installed: installed})
+}
+
+// GetTasksHandler handles GET /tasks?orderRef=<ref>. It requires the
+// orderRef query parameter (400 if missing) and returns every task
+// recorded for that order — normally one PICK/PACK/SLAM leg each, more if
+// a leg was retried after a lease expired — as a JSON array. An unknown
+// orderRef is not an error: it returns an empty array.
+func (h *Handlers) GetTasksHandler(w http.ResponseWriter, r *http.Request) {
+	orderRef := r.URL.Query().Get("orderRef")
+	if orderRef == "" {
+		writeBadRequest(w, r, "orderRef is required")
+		return
+	}
+
+	tasks, err := h.GetTasksByOrderRef.Execute(r.Context(), shared.OrderRef(orderRef))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	resp := make([]taskResponse, 0, len(tasks))
+	for _, t := range tasks {
+		resp = append(resp, toTaskResponse(t))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // PostExpireLeases handles POST /tasks/expire-leases.
 func (h *Handlers) PostExpireLeases(w http.ResponseWriter, r *http.Request) {
 	freed, err := h.ExpireLeases.Execute(r.Context())
@@ -247,4 +294,74 @@ func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
 // GetHealthz handles GET /healthz.
 func (h *Handlers) GetHealthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+// PostCheckInStation handles POST /stations/{stationId}/check-in.
+func (h *Handlers) PostCheckInStation(w http.ResponseWriter, r *http.Request) {
+	stationId := chi.URLParam(r, "stationId")
+	var req checkInStationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, r, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequest(w, r, msg)
+		return
+	}
+
+	s, err := h.CheckInStation.Execute(r.Context(), shared.StationId(stationId), station.OccupantId(req.OccupantId))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toStationResponse(s))
+}
+
+// PostCheckOutStation handles POST /stations/{stationId}/check-out.
+func (h *Handlers) PostCheckOutStation(w http.ResponseWriter, r *http.Request) {
+	stationId := chi.URLParam(r, "stationId")
+
+	s, err := h.CheckOutStation.Execute(r.Context(), shared.StationId(stationId))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toStationResponse(s))
+}
+
+// PostArriveAtRebin handles POST /rebin/arrivals: one required line of an
+// order has reached the Rebin path. Once every required line for the
+// order has arrived, this creates the order's PACK task — see
+// usecases.ArriveAtRebin.
+func (h *Handlers) PostArriveAtRebin(w http.ResponseWriter, r *http.Request) {
+	var req arriveAtRebinRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequestNoInstance(w, "invalid request body")
+		return
+	}
+	if msg := req.validate(); msg != "" {
+		writeBadRequestNoInstance(w, msg)
+		return
+	}
+
+	caps := make([]shared.Capability, len(req.PackRequiredCapabilities))
+	for i, c := range req.PackRequiredCapabilities {
+		caps[i] = shared.Capability(c)
+	}
+
+	err := h.ArriveAtRebin.Execute(
+		r.Context(),
+		shared.OrderRef(req.OrderRef),
+		req.LineId,
+		req.RequiredLineIds,
+		shared.NewCPT(req.PackCPT),
+		shared.NewCapabilitySet(caps...),
+		req.PackFragile,
+		req.PackGiftWrap,
+	)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -54,13 +54,17 @@ tags:
     description: >
       The Task aggregate: units of Pick, Pack, or SLAM work. Covers the pool
       (create), PULL dispatch (claim-next), lease lifecycle (renew, expire),
-      completion, and the read-model queue-depth projection.
+      completion, and read models: the pending queue-depth projection and
+      the by-order-reference lookup used by downstream consoles.
   - name: Stations
     description: >
       The Station aggregate: a work position with a capability set,
       occupied by at most one worker/robot at a time. Covers registration
-      (which also serves as idempotent re-certification) and is the entry
-      point for PULL dispatch (`claim-next` is a Station action).
+      (which also serves as idempotent re-certification), check-in/
+      check-out of the occupant (see
+      [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)), and
+      is the entry point for PULL dispatch (`claim-next` is a Station
+      action).
   - name: Packages
     description: >
       The Package aggregate: Pack-path output. An order's scanned contents
@@ -122,6 +126,72 @@ paths:
                 fragile: false
         "400":
           $ref: "#/components/responses/BadRequestNoInstance"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    get:
+      operationId: getTasksByOrderRef
+      tags: [Tasks]
+      summary: Look up every task recorded for an order reference
+      description: >
+        Read-only query tracing an order-management order back to the
+        Pick/Pack/SLAM tasks this service created for it — the endpoint
+        that backs a cross-service console screen answering "what tasks
+        has fulfillment-execution created/completed for order X". Returns
+        every task whose `orderRef` matches, normally one PICK/PACK/SLAM
+        leg each; a leg may appear more than once if it was retried (e.g.
+        a new task created after a prior one's lease expired without
+        completion), so treat the response as the full set of tasks for
+        the order, not a single result per process path. An unrecognized
+        `orderRef` is not an error — it returns an empty array, the same
+        convention `GET /queues/{taskType}/depth` uses for an unknown
+        `taskType`.
+      parameters:
+        - name: orderRef
+          in: query
+          required: true
+          description: The order reference to look up (Task.orderRef, set at creation).
+          schema:
+            type: string
+            example: order-42
+      responses:
+        "200":
+          description: Every task recorded for `orderRef` (possibly empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TaskResponse"
+              example:
+                - id: 20260101T120000.000000000
+                  type: PICK
+                  status: COMPLETED
+                  cpt: "2026-01-01T18:00:00Z"
+                  orderRef: order-42
+                  requiredCapabilities: [pick]
+                  fragile: false
+                  giftWrap: false
+                - id: 20260101T120100.000000000
+                  type: PACK
+                  status: PENDING
+                  cpt: "2026-01-01T19:00:00Z"
+                  orderRef: order-42
+                  requiredCapabilities: [pack]
+                  fragile: false
+                  giftWrap: false
+        "400":
+          description: The required `orderRef` query parameter is missing.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/invalid-request
+                title: The request is malformed or missing a required field
+                status: 400
+                detail: orderRef is required
+                instance: /tasks
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -253,6 +323,133 @@ paths:
                 status: 409
                 detail: "usecases: no claimable task for station capabilities"
                 instance: /stations/station-1/claim-next
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations/{stationId}/check-in:
+    post:
+      operationId: checkInStation
+      tags: [Stations]
+      summary: Check a worker or robot into a station
+      description: >
+        Assigns an occupant to a station — the Station aggregate's
+        `CheckIn` invariant enforced through the application layer: one
+        occupant at a time. This is operational state, not a
+        labor-performance domain event in its own right (see
+        [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)):
+        no domain event is published by this endpoint. The checked-in
+        occupant is instead surfaced, best-effort, as `associateId` on the
+        `TaskCompleted` Kafka event when a task claimed by this station is
+        later completed.
+      parameters:
+        - name: stationId
+          in: path
+          required: true
+          description: The station id, as returned by `POST /stations`.
+          schema:
+            type: string
+            example: station-1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CheckInStationRequest"
+            example:
+              occupantId: worker-42
+      responses:
+        "200":
+          description: Station checked in.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationResponse"
+              example:
+                id: station-1
+                capabilities: [pick]
+                occupied: true
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/check-in
+        "409":
+          description: The station already has an occupant checked in.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-occupied
+                title: Station is already occupied
+                status: 409
+                detail: "station: already occupied"
+                instance: /stations/station-1/check-in
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /stations/{stationId}/check-out:
+    post:
+      operationId: checkOutStation
+      tags: [Stations]
+      summary: Check the current occupant out of a station
+      description: >
+        Clears a station's occupant — the Station aggregate's `CheckOut`
+        invariant enforced through the application layer. Takes no request
+        body. Like check-in, this publishes no domain event (see
+        [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)).
+      parameters:
+        - name: stationId
+          in: path
+          required: true
+          description: The station id.
+          schema:
+            type: string
+            example: station-1
+      responses:
+        "200":
+          description: Station checked out.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StationResponse"
+              example:
+                id: station-1
+                capabilities: [pick]
+                occupied: false
+        "404":
+          description: No station is registered with this `stationId`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-found
+                title: Station not found
+                status: 404
+                detail: "usecases: station not found"
+                instance: /stations/station-1/check-out
+        "409":
+          description: The station has no occupant checked in.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-not-occupied
+                title: Station is not occupied
+                status: 409
+                detail: "station: not occupied"
+                instance: /stations/station-1/check-out
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -598,6 +795,43 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /capacity/{capability}:
+    get:
+      operationId: getInstalledCapacity
+      tags: [Stations]
+      summary: Read how many registered stations hold a given capability (read model)
+      description: >
+        A projection over the Station registry, not a staffing count: returns
+        how many currently-registered stations hold `capability`, regardless
+        of occupancy. This is the raw installed ceiling a process path can
+        ever be staffed up to — workforce-management's CommitShiftPlan calls
+        this endpoint to enforce `plannedHeads` against reality, live,
+        instead of trusting a caller-supplied installed-station count alone
+        (see this repo's ADR-0018). Read-only — never mutates state. An
+        unrecognized `capability` is not an error; it simply has an
+        installed count of `0`, the same "count over existing rows, not a
+        lookup against a fixed enum" contract `getQueueDepth` already uses.
+      parameters:
+        - name: capability
+          in: path
+          required: true
+          description: The capability to count registered stations for (e.g. pick, pack, slam, rebin).
+          schema:
+            type: string
+            example: pick
+      responses:
+        "200":
+          description: Current count of registered stations holding `capability`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstalledCapacityResponse"
+              example:
+                capability: pick
+                installed: 4
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /tasks/expire-leases:
     post:
       operationId: expireLeases
@@ -931,6 +1165,18 @@ components:
           description: Count of currently Pending tasks of this type.
           example: 3
 
+    InstalledCapacityResponse:
+      type: object
+      properties:
+        capability:
+          type: string
+          example: pick
+        installed:
+          type: integer
+          format: int32
+          description: Count of currently-registered stations holding this capability, regardless of occupancy.
+          example: 4
+
     ExpireLeasesResponse:
       type: object
       properties:
@@ -973,6 +1219,22 @@ components:
           type: boolean
           description: Whether the station currently has an occupant checked in.
           example: false
+
+    CheckInStationRequest:
+      type: object
+      required: [occupantId]
+      properties:
+        occupantId:
+          type: string
+          description: >
+            Identifies the worker or robot checking in. Opaque to this
+            service — carried through to the `associateId` field of a
+            later `TaskCompleted` Kafka event for any task this station
+            completes while the occupant remains checked in (see
+            [ADR-0014](/docs/adr/0014-labor-performance-integration-hooks)).
+          example: worker-42
+      example:
+        occupantId: worker-42
 
   responses:
     BadRequest:

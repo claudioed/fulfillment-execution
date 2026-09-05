@@ -471,6 +471,94 @@ func TestGetQueueDepth_CountsPendingTasksOfType(t *testing.T) {
 	}
 }
 
+func TestGetInstalledCapacity_CountsStationsHoldingCapability(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	_ = h.stations.Save(ctx, station.New("s2", shared.NewCapabilitySet("pick", "pack")))
+	_ = h.stations.Save(ctx, station.New("s3", shared.NewCapabilitySet("pack")))
+
+	uc := &usecases.GetInstalledCapacity{Stations: h.stations}
+	got, err := uc.Execute(ctx, "pick")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("expected 2 stations with pick capability, got %d", got)
+	}
+}
+
+func TestGetInstalledCapacity_UnknownCapability_ReturnsZero(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	uc := &usecases.GetInstalledCapacity{Stations: h.stations}
+	got, err := uc.Execute(ctx, "rebin")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("expected 0, got %d", got)
+	}
+}
+
+func TestGetTasksByOrderRef_ReturnsEveryTaskForTheOrder(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(2*time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_, _ = create.Execute(ctx, task.Slam, shared.NewCPT(epoch.Add(3*time.Hour)), "order-2", shared.NewCapabilitySet("slam"), false, false)
+
+	uc := &usecases.GetTasksByOrderRef{Tasks: h.tasks}
+	got, err := uc.Execute(ctx, "order-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 tasks for order-1, got %d", len(got))
+	}
+	for _, tk := range got {
+		if tk.OrderRef() != "order-1" {
+			t.Fatalf("expected only order-1 tasks, got orderRef %q", tk.OrderRef())
+		}
+	}
+}
+
+// A retried leg (a second task created for the same order after the first
+// was e.g. abandoned) must show up as a second entry, not be deduplicated —
+// callers need to see every task, including retries.
+func TestGetTasksByOrderRef_IncludesRetriedLegs(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(2*time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+
+	uc := &usecases.GetTasksByOrderRef{Tasks: h.tasks}
+	got, err := uc.Execute(ctx, "order-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 retried PICK legs for order-1, got %d", len(got))
+	}
+}
+
+func TestGetTasksByOrderRef_UnknownOrderRefReturnsEmptyNotError(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.GetTasksByOrderRef{Tasks: h.tasks}
+
+	got, err := uc.Execute(context.Background(), "does-not-exist")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty result, got %d", len(got))
+	}
+}
+
 func TestRegisterStation_AddsStationToPool(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
@@ -1177,5 +1265,96 @@ func TestCompleteTask_CountsTheCompletedTaskByType(t *testing.T) {
 	}
 	if len(metrics.completed) != 1 || metrics.completed[0] != task.Slam {
 		t.Fatalf("completed counter recorded %v, want one Slam", metrics.completed)
+	}
+}
+
+// CheckInStation wires station.CheckIn to the application layer: success
+// assigns the occupant and persists it.
+func TestCheckInStation_AssignsOccupant(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	uc := &usecases.CheckInStation{Stations: h.stations}
+	got, err := uc.Execute(ctx, "s1", "worker-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !got.IsOccupied() || *got.Occupant() != station.OccupantId("worker-1") {
+		t.Fatalf("expected station occupied by worker-1, got %+v", got.Occupant())
+	}
+
+	persisted, _ := h.stations.FindById(ctx, "s1")
+	if persisted == nil || !persisted.IsOccupied() {
+		t.Fatalf("expected the check-in to be persisted")
+	}
+}
+
+func TestCheckInStation_ReturnsErrStationNotFound(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.CheckInStation{Stations: h.stations}
+	_, err := uc.Execute(context.Background(), "does-not-exist", "worker-1")
+	if !errors.Is(err, usecases.ErrStationNotFound) {
+		t.Fatalf("expected ErrStationNotFound, got %v", err)
+	}
+}
+
+// Invariant (through the use case): one occupant at a time.
+func TestCheckInStation_RejectsSecondOccupant(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	uc := &usecases.CheckInStation{Stations: h.stations}
+	if _, err := uc.Execute(ctx, "s1", "worker-1"); err != nil {
+		t.Fatalf("first check-in should succeed: %v", err)
+	}
+	_, err := uc.Execute(ctx, "s1", "worker-2")
+	if !errors.Is(err, station.ErrOccupied) {
+		t.Fatalf("expected station.ErrOccupied, got %v", err)
+	}
+}
+
+// CheckOutStation wires station.CheckOut to the application layer:
+// success clears the occupant and persists it.
+func TestCheckOutStation_ClearsOccupant(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	_, _ = (&usecases.CheckInStation{Stations: h.stations}).Execute(ctx, "s1", "worker-1")
+
+	uc := &usecases.CheckOutStation{Stations: h.stations}
+	got, err := uc.Execute(ctx, "s1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.IsOccupied() {
+		t.Fatalf("expected station to be vacant after check-out")
+	}
+
+	persisted, _ := h.stations.FindById(ctx, "s1")
+	if persisted == nil || persisted.IsOccupied() {
+		t.Fatalf("expected the check-out to be persisted")
+	}
+}
+
+func TestCheckOutStation_ReturnsErrStationNotFound(t *testing.T) {
+	h := newHarness()
+	uc := &usecases.CheckOutStation{Stations: h.stations}
+	_, err := uc.Execute(context.Background(), "does-not-exist")
+	if !errors.Is(err, usecases.ErrStationNotFound) {
+		t.Fatalf("expected ErrStationNotFound, got %v", err)
+	}
+}
+
+func TestCheckOutStation_RejectsWhenNotOccupied(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+
+	uc := &usecases.CheckOutStation{Stations: h.stations}
+	_, err := uc.Execute(ctx, "s1")
+	if !errors.Is(err, station.ErrNotOccupied) {
+		t.Fatalf("expected station.ErrNotOccupied, got %v", err)
 	}
 }

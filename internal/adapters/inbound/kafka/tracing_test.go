@@ -53,7 +53,7 @@ func workReleasedMessage(t *testing.T, eventId string) kafkago.Message {
 		"occurred_at": epoch,
 		"source":      "wes-work-planning",
 		"data": map[string]any{
-			"path_id":      "pick-1",
+			"path_id":      "PICK",
 			"work_unit_id": "wu-1",
 			"cpt":          epoch,
 			"ref":          "order-1",

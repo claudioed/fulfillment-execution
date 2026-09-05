@@ -6,10 +6,13 @@ import (
 	"testing"
 	"time"
 
+	kafkago "github.com/segmentio/kafka-go"
+
 	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
+	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
@@ -24,6 +27,17 @@ func idSeq(prefix string) func() shared.TaskId {
 	}
 }
 
+// testCatalogue is the fixture catalogue every consumer test uses,
+// mirroring warehouse-infra's real sortable-fc.yaml declared paths.
+func testCatalogue() *pathcatalog.Catalogue {
+	return pathcatalog.New([]pathcatalog.PathDefinition{
+		{Id: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}},
+		{Id: "PACK", MatchPrefix: "pack", Direct: true, RequiredCapabilities: []string{"pack"}},
+		{Id: "REBIN", MatchPrefix: "rebin", Direct: true, RequiredCapabilities: []string{"rebin"}},
+		{Id: "SLAM", MatchPrefix: "slam", Direct: true, RequiredCapabilities: []string{"slam"}},
+	})
+}
+
 func newConsumer(t *testing.T) (*kafka.Consumer, *memory.TaskRepo) {
 	t.Helper()
 	tasks := memory.NewTaskRepo()
@@ -36,6 +50,7 @@ func newConsumer(t *testing.T) (*kafka.Consumer, *memory.TaskRepo) {
 	c := &kafka.Consumer{
 		CreateTask: createTask,
 		Processed:  memory.NewProcessedEventsRepo(),
+		Catalogue:  testCatalogue(),
 	}
 	return c, tasks
 }
@@ -43,7 +58,7 @@ func newConsumer(t *testing.T) (*kafka.Consumer, *memory.TaskRepo) {
 func totalPending(t *testing.T, tasks *memory.TaskRepo) int {
 	t.Helper()
 	total := 0
-	for _, tt := range []task.Type{task.Pick, task.Pack, task.Slam} {
+	for _, tt := range []task.Type{task.Pick, task.Pack, task.Rebin, task.Slam} {
 		n, err := tasks.CountByTypeAndStatus(context.Background(), tt, task.Pending)
 		if err != nil {
 			t.Fatalf("CountByTypeAndStatus: %v", err)
@@ -100,10 +115,23 @@ func workReleasedJSONWithGiftWrap(eventId, pathId, workUnitId string, giftWrap b
 	}`)
 }
 
+func TestNewConsumerWithGroup_UsesSuppliedConsumerGroup(t *testing.T) {
+	c := kafka.NewConsumerWithGroup([]string{"broker:9092"}, "work-released", "e2s-fulfillment", nil, nil, nil, nil)
+	defer c.Close()
+
+	config := c.Reader.Config()
+	if got := config.GroupID; got != "e2s-fulfillment" {
+		t.Fatalf("Reader group ID = %q, want supplied group", got)
+	}
+	if config.StartOffset != kafkago.LastOffset {
+		t.Fatalf("Reader start offset = %d, want LastOffset for an isolated group", config.StartOffset)
+	}
+}
+
 func TestHandleMessage_CreatesTaskFromWorkReleased(t *testing.T) {
 	c, tasks := newConsumer(t)
 
-	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-1", "pick-abc", "wu-1"))
+	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-1", "PICK", "wu-1"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,7 +161,7 @@ func TestHandleMessage_IgnoresNonWorkReleasedEvents(t *testing.T) {
 func TestHandleMessage_DoubleDeliveryCreatesExactlyOneTask(t *testing.T) {
 	c, tasks := newConsumer(t)
 
-	msg := workReleasedJSON("evt-dup", "pack-xyz", "wu-2")
+	msg := workReleasedJSON("evt-dup", "PACK", "wu-2")
 	if err := c.HandleMessage(context.Background(), msg); err != nil {
 		t.Fatalf("first delivery: unexpected error: %v", err)
 	}
@@ -146,7 +174,10 @@ func TestHandleMessage_DoubleDeliveryCreatesExactlyOneTask(t *testing.T) {
 	}
 }
 
-func TestHandleMessage_DerivesTaskTypeFromPathIdPrefix(t *testing.T) {
+// The path-catalogue lookup replaces the old path_id-prefix-guessing
+// convention: every declared path resolves to its own real task type and
+// required-capability set, sourced entirely from the catalogue.
+func TestHandleMessage_DerivesTaskTypeFromCatalogue(t *testing.T) {
 	c, tasks := newConsumer(t)
 
 	cases := []struct {
@@ -154,29 +185,83 @@ func TestHandleMessage_DerivesTaskTypeFromPathIdPrefix(t *testing.T) {
 		pathId   string
 		wantType task.Type
 	}{
-		{"evt-pick", "pick-1", task.Pick},
-		{"evt-pack", "pack-1", task.Pack},
-		{"evt-slam", "slam-1", task.Slam},
-		{"evt-unknown", "unknown-1", task.Pick},
+		{"evt-pick", "PICK", task.Pick},
+		{"evt-pack", "PACK", task.Pack},
+		{"evt-rebin", "REBIN", task.Rebin},
+		{"evt-slam", "SLAM", task.Slam},
 	}
 	for _, tc := range cases {
 		if err := c.HandleMessage(context.Background(), workReleasedJSON(tc.eventId, tc.pathId, "wu-derive")); err != nil {
-			t.Fatalf("unexpected error: %v", err)
+			t.Fatalf("unexpected error for path_id %q: %v", tc.pathId, err)
 		}
 	}
 
 	pick, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pick, task.Pending)
 	pack, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pack, task.Pending)
+	rebin, _ := tasks.CountByTypeAndStatus(context.Background(), task.Rebin, task.Pending)
 	slam, _ := tasks.CountByTypeAndStatus(context.Background(), task.Slam, task.Pending)
 
-	if pick != 2 { // "pick-1" plus the default for "unknown-1"
-		t.Fatalf("expected 2 Pick tasks (explicit + default), got %d", pick)
+	if pick != 1 {
+		t.Fatalf("expected 1 Pick task, got %d", pick)
 	}
 	if pack != 1 {
 		t.Fatalf("expected 1 Pack task, got %d", pack)
 	}
+	if rebin != 1 {
+		t.Fatalf("expected 1 Rebin task, got %d", rebin)
+	}
 	if slam != 1 {
 		t.Fatalf("expected 1 SLAM task, got %d", slam)
+	}
+}
+
+// The regression this fix exists to prevent: real WorkReleased events
+// across this fleet carry station/zone/scenario-qualified path_id
+// values (order-management's default "pick", e2e fixtures' "pick-zone-a"
+// and "pick-soak"), not the bare canonical catalogue id. Every one of
+// these must resolve to the correct task type, not fail as unknown.
+func TestHandleMessage_ResolvesRealFleetPathIdVariants(t *testing.T) {
+	c, tasks := newConsumer(t)
+
+	cases := []struct {
+		eventId  string
+		pathId   string
+		wantType task.Type
+	}{
+		{"evt-default-pick", "pick", task.Pick},
+		{"evt-zone-a", "pick-zone-a", task.Pick},
+		{"evt-pick-soak", "pick-soak", task.Pick},
+		{"evt-pack-soak", "pack-soak", task.Pack},
+	}
+	for _, tc := range cases {
+		if err := c.HandleMessage(context.Background(), workReleasedJSON(tc.eventId, tc.pathId, "wu-variant")); err != nil {
+			t.Fatalf("unexpected error for real-world path_id %q: %v", tc.pathId, err)
+		}
+	}
+
+	pick, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pick, task.Pending)
+	pack, _ := tasks.CountByTypeAndStatus(context.Background(), task.Pack, task.Pending)
+	if pick != 3 {
+		t.Fatalf("expected 3 Pick tasks from the 3 pick-family path_ids, got %d", pick)
+	}
+	if pack != 1 {
+		t.Fatalf("expected 1 Pack task from the pack-family path_id, got %d", pack)
+	}
+}
+
+// The core behavior change this catalogue introduces: an unrecognized
+// path_id is now a hard error, never a silent default to task.Pick. This
+// is a deliberate breaking fix to a documented bug (see ADR on the
+// process-path catalogue), not a regression.
+func TestHandleMessage_UnknownPathId_ReturnsError(t *testing.T) {
+	c, tasks := newConsumer(t)
+
+	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-unknown", "NOT-A-REAL-PATH", "wu-unknown"))
+	if err == nil {
+		t.Fatal("expected an error for an unrecognized path_id, got nil")
+	}
+	if got := totalPending(t, tasks); got != 0 {
+		t.Fatalf("expected no task to be created for an unrecognized path_id, got %d", got)
 	}
 }
 
@@ -188,7 +273,7 @@ func TestHandleMessage_DerivesTaskTypeFromPathIdPrefix(t *testing.T) {
 func TestHandleMessage_ReadsOptionalFragileFlag(t *testing.T) {
 	c, tasks := newConsumer(t)
 
-	err := c.HandleMessage(context.Background(), workReleasedJSONWithFragile("evt-fragile", "pack-abc", "wu-fragile", true))
+	err := c.HandleMessage(context.Background(), workReleasedJSONWithFragile("evt-fragile", "PACK", "wu-fragile", true))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -211,7 +296,7 @@ func TestHandleMessage_ReadsOptionalFragileFlag(t *testing.T) {
 func TestHandleMessage_MissingFragileFieldDefaultsFalse(t *testing.T) {
 	c, tasks := newConsumer(t)
 
-	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-no-fragile", "pick-abc", "wu-no-fragile"))
+	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-no-fragile", "PICK", "wu-no-fragile"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -235,7 +320,7 @@ func TestHandleMessage_MissingFragileFieldDefaultsFalse(t *testing.T) {
 func TestHandleMessage_ReadsOptionalGiftWrapFlag(t *testing.T) {
 	c, tasks := newConsumer(t)
 
-	err := c.HandleMessage(context.Background(), workReleasedJSONWithGiftWrap("evt-giftwrap", "pack-def", "wu-giftwrap", true))
+	err := c.HandleMessage(context.Background(), workReleasedJSONWithGiftWrap("evt-giftwrap", "PACK", "wu-giftwrap", true))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -258,7 +343,7 @@ func TestHandleMessage_ReadsOptionalGiftWrapFlag(t *testing.T) {
 func TestHandleMessage_MissingGiftWrapFieldDefaultsFalse(t *testing.T) {
 	c, tasks := newConsumer(t)
 
-	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-no-giftwrap", "pick-def", "wu-no-giftwrap"))
+	err := c.HandleMessage(context.Background(), workReleasedJSON("evt-no-giftwrap", "PICK", "wu-no-giftwrap"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -16,6 +17,7 @@ import (
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/filecatalog"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
@@ -79,11 +81,22 @@ func run() error {
 	databaseURL := os.Getenv("DATABASE_URL")
 	kafkaBrokers := strings.Split(getenv("KAFKA_BROKERS", "localhost:9092"), ",")
 
+	// The process-path catalogue is loaded and validated once at boot,
+	// before anything else stands up — a missing or malformed catalogue
+	// file must stop this service from starting at all, never fall back
+	// to a partial/empty catalogue (see filecatalog.Load's doc comment).
+	catalogue, err := filecatalog.Load(getenv("PATH_CATALOGUE_FILE", "/etc/fulfillment-execution/process-paths.yaml"))
+	if err != nil {
+		return fmt.Errorf("failed to load the process-path catalogue: %w", err)
+	}
+	logger.Info("process-path catalogue loaded", "paths", catalogue.Ids())
+
 	var (
-		taskRepo        ports.TaskRepo
-		stationRepo     ports.StationRepo
-		packageRepo     ports.PackageRepo
-		processedEvents ports.ProcessedEvents
+		taskRepo          ports.TaskRepo
+		stationRepo       ports.StationRepo
+		packageRepo       ports.PackageRepo
+		processedEvents   ports.ProcessedEvents
+		consolidationRepo ports.OrderConsolidationRepo
 	)
 
 	if databaseURL == "" {
@@ -92,6 +105,7 @@ func run() error {
 		stationRepo = memory.NewStationRepo()
 		packageRepo = memory.NewPackageRepo()
 		processedEvents = memory.NewProcessedEventsRepo()
+		consolidationRepo = memory.NewOrderConsolidationRepo()
 	} else {
 		if err := postgres.Migrate(databaseURL, "migrations"); err != nil {
 			return err
@@ -108,6 +122,7 @@ func run() error {
 		stationRepo = postgres.NewStationRepo(pool)
 		packageRepo = postgres.NewPackageRepo(pool)
 		processedEvents = postgres.NewProcessedEventsRepo(pool)
+		consolidationRepo = postgres.NewOrderConsolidationRepo(pool)
 	}
 
 	var (
@@ -117,7 +132,7 @@ func run() error {
 	)
 	if getenv("EVENT_PUBLISHER", "log") == "kafka" {
 		logger.Info("event publisher configured", "publisher", "kafka", "topic", outboundkafka.Topic, "analytics_topic", outboundkafka.AnalyticsTopic, "brokers", kafkaBrokers)
-		kafkaPublisher = outboundkafka.NewPublisher(kafkaBrokers, taskRepo, uuidLike)
+		kafkaPublisher = outboundkafka.NewPublisher(kafkaBrokers, taskRepo, stationRepo, uuidLike)
 		analyticsPub = outboundkafka.NewAnalyticsPublisher(kafkaBrokers, taskRepo, uuidLike)
 		// Fan every domain event to BOTH the integration topic and the
 		// dedicated analytics topic (ADR-0012). The analytics stream feeds
@@ -132,21 +147,32 @@ func run() error {
 	createTask := &usecases.CreateTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId}
 
 	handlers := &inboundhttp.Handlers{
-		CreateTask:      createTask,
-		ClaimNext:       &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
-		RenewLease:      &usecases.RenewLease{Tasks: taskRepo, Clock: clock},
-		CompleteTask:    &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
-		SealPackage:     &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId, ClassificationLookup: classificationLookup},
-		RunSlam:         &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock},
-		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: taskRepo},
-		ExpireLeases:    &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock},
-		RegisterStation: &usecases.RegisterStation{Stations: stationRepo, Publisher: publisher},
+		CreateTask:         createTask,
+		ClaimNext:          &usecases.ClaimNext{Tasks: taskRepo, Stations: stationRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
+		RenewLease:         &usecases.RenewLease{Tasks: taskRepo, Clock: clock},
+		CompleteTask:       &usecases.CompleteTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, Metrics: metricsPort(metrics)},
+		SealPackage:        &usecases.SealPackage{Tasks: taskRepo, Packages: packageRepo, Publisher: publisher, Clock: clock, NewId: newPackageId, ClassificationLookup: classificationLookup},
+		RunSlam:            &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock},
+		GetQueueDepth:      &usecases.GetQueueDepth{Tasks: taskRepo},
+		ExpireLeases:       &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock},
+		RegisterStation:    &usecases.RegisterStation{Stations: stationRepo, Publisher: publisher},
+		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: taskRepo},
+		CheckInStation:     &usecases.CheckInStation{Stations: stationRepo},
+		CheckOutStation:    &usecases.CheckOutStation{Stations: stationRepo},
+		ArriveAtRebin: &usecases.ArriveAtRebin{
+			Consolidations: consolidationRepo,
+			CreateTask:     createTask,
+			Publisher:      publisher,
+			Clock:          clock,
+		},
+		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stationRepo},
 	}
 	router := inboundhttp.NewRouter(handlers, logger)
 
-	srv := &http.Server{Addr: httpAddr, Handler: router}
+	srv := &http.Server{Addr: httpAddr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 
-	consumer := inboundkafka.NewConsumer(kafkaBrokers, workReleasedTopic, createTask, processedEvents, logger)
+	consumerGroup := getenv("WORK_RELEASED_CONSUMER_GROUP", "fulfillment-execution")
+	consumer := inboundkafka.NewConsumerWithGroup(kafkaBrokers, workReleasedTopic, consumerGroup, createTask, processedEvents, catalogue, logger)
 	defer func() { _ = consumer.Close() }()
 	if kafkaPublisher != nil {
 		defer func() { _ = kafkaPublisher.Close() }()

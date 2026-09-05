@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
+	"github.com/claudioed/fulfillment-execution/internal/domain/consolidation"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
@@ -49,6 +50,7 @@ func statusFor(err error) int {
 	case errors.Is(err, task.ErrCapabilityMismatch),
 		errors.Is(err, station.ErrCapabilityMismatch),
 		errors.Is(err, pack.ErrNoScannedContents),
+		errors.Is(err, consolidation.ErrUnknownLine),
 		errors.Is(err, usecases.ErrWrongTaskType):
 		return http.StatusUnprocessableEntity
 
@@ -98,6 +100,8 @@ func problemTypeAndTitle(err error) (slug, title string) {
 		return "station-capability-mismatch", "Capabilities do not match"
 	case errors.Is(err, pack.ErrNoScannedContents):
 		return "package-no-scanned-contents", "Cannot seal a package without scanned contents"
+	case errors.Is(err, consolidation.ErrUnknownLine):
+		return "rebin-unknown-line", "Line is not part of this order's required consolidation set"
 	case errors.Is(err, usecases.ErrWrongTaskType):
 		return "wrong-task-type", "Wrong task type for this operation"
 

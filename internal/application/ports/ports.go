@@ -7,7 +7,9 @@ import (
 	"context"
 	"time"
 
+	"github.com/claudioed/fulfillment-execution/internal/domain/consolidation"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
+	"github.com/claudioed/fulfillment-execution/internal/domain/pathcatalog"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
@@ -24,18 +26,53 @@ type TaskRepo interface {
 	// the lease-expiry sweep.
 	FindAllClaimed(ctx context.Context) ([]*task.Task, error)
 	CountByTypeAndStatus(ctx context.Context, taskType task.Type, status task.Status) (int, error)
+	// FindByOrderRef returns every task created for orderRef — a PICK,
+	// PACK, and SLAM leg is typically one each, but a leg may appear more
+	// than once if it was retried (e.g. a new task created after a prior
+	// one's lease expired without completion), so callers must treat this
+	// as a set of tasks per order, not a single result. Order is
+	// unspecified; an unknown orderRef returns an empty slice, not an
+	// error.
+	FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error)
 }
 
 // StationRepo persists and retrieves Station aggregates.
 type StationRepo interface {
 	Save(ctx context.Context, s *station.Station) error
 	FindById(ctx context.Context, id shared.StationId) (*station.Station, error)
+	// CountByCapability returns how many currently-registered stations
+	// hold capability, regardless of occupancy. This is a raw
+	// installed-capacity count (stations that CAN work the path), not a
+	// staffing count (associates actively working it right now) — see
+	// GetInstalledCapacity's own doc comment for the distinction this
+	// use case depends on.
+	CountByCapability(ctx context.Context, capability shared.Capability) (int, error)
 }
 
 // PackageRepo persists and retrieves Package aggregates.
 type PackageRepo interface {
 	Save(ctx context.Context, p *pack.Package) error
 	FindById(ctx context.Context, id shared.PackageId) (*pack.Package, error)
+}
+
+// OrderConsolidationRepo persists and retrieves OrderConsolidation
+// aggregates, one per order, tracking Rebin fan-in. FindByOrderRef
+// returns nil (not an error) when no consolidation tracker exists yet for
+// orderRef — the use case treats that as "not yet started" and creates
+// one on first arrival, so no separate "does one exist" call is needed.
+type OrderConsolidationRepo interface {
+	Save(ctx context.Context, oc *consolidation.OrderConsolidation) error
+	FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) (*consolidation.OrderConsolidation, error)
+}
+
+// PathCatalogue is the outbound port for the fleet's declared process-path
+// catalogue (see warehouse-infra's config/process-paths/*.yaml, loaded by
+// the filecatalog adapter). It replaces the WorkReleased consumer's old
+// path_id-prefix-convention guess with a real, validated lookup: an
+// unrecognized path_id is now a hard error, not a silent default to
+// task.Pick. See the process-path-catalogue-as-configuration ADR.
+type PathCatalogue interface {
+	Lookup(id string) (pathcatalog.PathDefinition, error)
 }
 
 // EventPublisher publishes domain events raised by use cases.

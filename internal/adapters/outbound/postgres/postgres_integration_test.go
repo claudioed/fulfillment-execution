@@ -4,6 +4,7 @@ package postgres_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
+	"github.com/claudioed/fulfillment-execution/internal/domain/consolidation"
 	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
@@ -137,6 +139,46 @@ func TestStationRepo_SaveAndFindById(t *testing.T) {
 	}
 }
 
+// TestStationRepo_CountByCapability proves the real Postgres
+// ANY(capabilities) containment query against actual rows, not just the
+// in-memory adapter's Go-side filter — the two must agree, since
+// GetInstalledCapacity's behavior depends on whichever one is wired in
+// production.
+func TestStationRepo_CountByCapability(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewStationRepo(pool)
+	ctx := context.Background()
+
+	capability := shared.Capability(fmt.Sprintf("integration-cap-%d", time.Now().UnixNano()))
+	otherCapability := shared.Capability(fmt.Sprintf("integration-other-cap-%d", time.Now().UnixNano()))
+
+	if err := repo.Save(ctx, station.New(shared.StationId("cap-station-1"), shared.NewCapabilitySet(capability))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := repo.Save(ctx, station.New(shared.StationId("cap-station-2"), shared.NewCapabilitySet(capability, otherCapability))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := repo.Save(ctx, station.New(shared.StationId("cap-station-3"), shared.NewCapabilitySet(otherCapability))); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := repo.CountByCapability(ctx, capability)
+	if err != nil {
+		t.Fatalf("CountByCapability: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("expected 2 stations with capability %q, got %d", capability, got)
+	}
+
+	got, err = repo.CountByCapability(ctx, shared.Capability("no-such-capability"))
+	if err != nil {
+		t.Fatalf("CountByCapability: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("expected 0 stations for an unregistered capability, got %d", got)
+	}
+}
+
 func TestPackageRepo_SaveAndFindById(t *testing.T) {
 	pool := newPool(t)
 	repo := postgres.NewPackageRepo(pool)
@@ -197,6 +239,48 @@ func TestPackageRepo_SaveAndFindById(t *testing.T) {
 	}
 }
 
+// TaskRepo's other query specific to this repo: FindByOrderRef, which backs
+// GET /tasks?orderRef= — must return every task recorded for an order,
+// including retried legs, and an unknown orderRef must return an empty
+// slice rather than an error.
+func TestTaskRepo_FindByOrderRef_ReturnsEveryMatchingTask(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewTaskRepo(pool)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Microsecond)
+
+	pick := task.New("integration-task-orderref-pick", task.Pick, shared.NewCPT(now.Add(time.Hour)), "integration-order-ref-1", shared.NewCapabilitySet("pick"), false, false)
+	retriedPick := task.New("integration-task-orderref-pick-retry", task.Pick, shared.NewCPT(now.Add(90*time.Minute)), "integration-order-ref-1", shared.NewCapabilitySet("pick"), false, false)
+	pack := task.New("integration-task-orderref-pack", task.Pack, shared.NewCPT(now.Add(2*time.Hour)), "integration-order-ref-1", shared.NewCapabilitySet("pack"), false, false)
+	otherOrder := task.New("integration-task-orderref-other", task.Pick, shared.NewCPT(now.Add(time.Hour)), "integration-order-ref-2", shared.NewCapabilitySet("pick"), false, false)
+	for _, tk := range []*task.Task{pick, retriedPick, pack, otherOrder} {
+		if err := repo.Save(ctx, tk); err != nil {
+			t.Fatalf("Save(%s): %v", tk.Id(), err)
+		}
+	}
+
+	got, err := repo.FindByOrderRef(ctx, "integration-order-ref-1")
+	if err != nil {
+		t.Fatalf("FindByOrderRef: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 tasks for integration-order-ref-1 (including retried leg), got %d", len(got))
+	}
+	for _, tk := range got {
+		if tk.OrderRef() != "integration-order-ref-1" {
+			t.Fatalf("expected only integration-order-ref-1 tasks, got orderRef %q", tk.OrderRef())
+		}
+	}
+
+	empty, err := repo.FindByOrderRef(ctx, "integration-order-ref-does-not-exist")
+	if err != nil {
+		t.Fatalf("FindByOrderRef (unknown): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("expected empty result for unknown orderRef, got %d", len(empty))
+	}
+}
+
 // ProcessedEventsRepo's query specific to this repo: MarkProcessed must be
 // idempotent so an at-least-once source (Kafka) is consumed exactly once.
 func TestProcessedEventsRepo_MarkProcessed_IsIdempotent(t *testing.T) {
@@ -224,5 +308,63 @@ func TestProcessedEventsRepo_MarkProcessed_IsIdempotent(t *testing.T) {
 	}
 	if second {
 		t.Fatalf("expected second MarkProcessed call for the same event id to return false")
+	}
+}
+
+// OrderConsolidationRepo's round-trip: Save then FindByOrderRef must
+// preserve both the required and arrived line sets, and an unknown
+// orderRef must return (nil, nil) rather than an error.
+func TestOrderConsolidationRepo_SaveAndFindByOrderRef(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewOrderConsolidationRepo(pool)
+	ctx := context.Background()
+
+	oc := consolidation.New("integration-order-consolidation-1", []string{"line-1", "line-2"})
+	if err := oc.RecordArrival("line-1"); err != nil {
+		t.Fatalf("RecordArrival: %v", err)
+	}
+	if err := repo.Save(ctx, oc); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := repo.FindByOrderRef(ctx, "integration-order-consolidation-1")
+	if err != nil {
+		t.Fatalf("FindByOrderRef: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected to find the saved consolidation")
+	}
+	if got.IsComplete() {
+		t.Fatalf("expected incomplete: only one of two required lines arrived")
+	}
+	if len(got.RequiredLineIds()) != 2 {
+		t.Fatalf("expected 2 required lines to round-trip, got %v", got.RequiredLineIds())
+	}
+	if len(got.ArrivedLineIds()) != 1 || got.ArrivedLineIds()[0] != "line-1" {
+		t.Fatalf("expected arrived lines [line-1] to round-trip, got %v", got.ArrivedLineIds())
+	}
+
+	// Recording the second arrival and re-saving must update the same
+	// row (ON CONFLICT DO UPDATE), not create a duplicate.
+	if err := got.RecordArrival("line-2"); err != nil {
+		t.Fatalf("RecordArrival (line-2): %v", err)
+	}
+	if err := repo.Save(ctx, got); err != nil {
+		t.Fatalf("Save (post-completion): %v", err)
+	}
+	reloaded, err := repo.FindByOrderRef(ctx, "integration-order-consolidation-1")
+	if err != nil {
+		t.Fatalf("FindByOrderRef (post-completion): %v", err)
+	}
+	if !reloaded.IsComplete() {
+		t.Fatalf("expected complete after both lines arrived and were re-saved")
+	}
+
+	unknown, err := repo.FindByOrderRef(ctx, "integration-order-consolidation-does-not-exist")
+	if err != nil {
+		t.Fatalf("FindByOrderRef (unknown): %v", err)
+	}
+	if unknown != nil {
+		t.Fatalf("expected nil for an unknown orderRef, got %+v", unknown)
 	}
 }
