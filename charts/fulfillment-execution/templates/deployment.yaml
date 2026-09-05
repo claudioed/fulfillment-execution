@@ -15,6 +15,9 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.pathCatalogue.enabled }}
+        checksum/path-catalogue: {{ .Values.pathCatalogue.content | sha256sum }}
+        {{- end }}
         {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -68,9 +71,19 @@ spec:
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
             {{- end }}
+            {{- if .Values.pathCatalogue.enabled }}
+            - name: PATH_CATALOGUE_FILE
+              value: {{ .Values.pathCatalogue.mountPath }}/process-paths.yaml
+            {{- end }}
             {{- range .Values.extraEnv }}
             - {{ toYaml . | nindent 14 | trim }}
             {{- end }}
+          {{- if .Values.pathCatalogue.enabled }}
+          volumeMounts:
+            - name: path-catalogue
+              mountPath: {{ .Values.pathCatalogue.mountPath }}
+              readOnly: true
+          {{- end }}
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
@@ -81,6 +94,12 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.pathCatalogue.enabled }}
+      volumes:
+        - name: path-catalogue
+          configMap:
+            name: {{ .Values.pathCatalogue.existingConfigMap | default (printf "%s-path-catalogue" (include "fulfillment-execution.fullname" .)) }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
