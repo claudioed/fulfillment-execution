@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	kafkago "github.com/segmentio/kafka-go"
+
 	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
@@ -98,6 +100,19 @@ func workReleasedJSONWithGiftWrap(eventId, pathId, workUnitId string, giftWrap b
 			"gift_wrap": ` + strconv.FormatBool(giftWrap) + `
 		}
 	}`)
+}
+
+func TestNewConsumerWithGroup_UsesSuppliedConsumerGroup(t *testing.T) {
+	c := kafka.NewConsumerWithGroup([]string{"broker:9092"}, "work-released", "e2s-fulfillment", nil, nil, nil)
+	defer c.Close()
+
+	config := c.Reader.Config()
+	if got := config.GroupID; got != "e2s-fulfillment" {
+		t.Fatalf("Reader group ID = %q, want supplied group", got)
+	}
+	if config.StartOffset != kafkago.LastOffset {
+		t.Fatalf("Reader start offset = %d, want LastOffset for an isolated group", config.StartOffset)
+	}
 }
 
 func TestHandleMessage_CreatesTaskFromWorkReleased(t *testing.T) {

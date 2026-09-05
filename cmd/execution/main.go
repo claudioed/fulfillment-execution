@@ -141,7 +141,8 @@ func run() error {
 
 	srv := &http.Server{Addr: httpAddr, Handler: router}
 
-	consumer := inboundkafka.NewConsumer(kafkaBrokers, workReleasedTopic, createTask, processedEvents, logger)
+	consumerGroup := getenv("WORK_RELEASED_CONSUMER_GROUP", "fulfillment-execution")
+	consumer := inboundkafka.NewConsumerWithGroup(kafkaBrokers, workReleasedTopic, consumerGroup, createTask, processedEvents, logger)
 	defer func() { _ = consumer.Close() }()
 	if kafkaPublisher != nil {
 		defer func() { _ = kafkaPublisher.Close() }()

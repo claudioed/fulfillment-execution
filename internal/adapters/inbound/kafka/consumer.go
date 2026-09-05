@@ -72,13 +72,25 @@ type Consumer struct {
 // NewConsumer constructs a Consumer reading topic from brokers as part of
 // consumer group "fulfillment-execution".
 func NewConsumer(brokers []string, topic string, createTask *usecases.CreateTask, processed ports.ProcessedEvents, logger *slog.Logger) *Consumer {
+	return newConsumer(brokers, topic, "fulfillment-execution", kafkago.FirstOffset, createTask, processed, logger)
+}
+
+// NewConsumerWithGroup constructs an isolated Consumer. Its first assignment
+// begins at the latest offset, so a system-test database is populated only by
+// events released after the test's service process is ready.
+func NewConsumerWithGroup(brokers []string, topic, groupID string, createTask *usecases.CreateTask, processed ports.ProcessedEvents, logger *slog.Logger) *Consumer {
+	return newConsumer(brokers, topic, groupID, kafkago.LastOffset, createTask, processed, logger)
+}
+
+func newConsumer(brokers []string, topic, groupID string, startOffset int64, createTask *usecases.CreateTask, processed ports.ProcessedEvents, logger *slog.Logger) *Consumer {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
-		Brokers: brokers,
-		Topic:   topic,
-		GroupID: "fulfillment-execution",
+		Brokers:     brokers,
+		Topic:       topic,
+		GroupID:     groupID,
+		StartOffset: startOffset,
 	})
 	return &Consumer{Reader: reader, CreateTask: createTask, Processed: processed, Logger: logger}
 }
