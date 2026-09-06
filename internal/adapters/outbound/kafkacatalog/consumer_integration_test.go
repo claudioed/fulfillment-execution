@@ -4,6 +4,7 @@ package kafkacatalog
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -15,10 +16,23 @@ import (
 // shipped with: a second NewConsumer call (simulating a service
 // restart) must independently replay Topic's full history into its own
 // cache, NOT resume from wherever the first instance's consumer group
-// left off. Requires a real local broker (default localhost:9092) --
-// gated behind the integration build tag per this fleet's convention.
+// left off.
+//
+// Requires KAFKA_BROKERS to point at a real, reachable broker (e.g.
+// KAFKA_BROKERS=localhost:9092) -- this fleet's own CI `integration`
+// job only provisions a Postgres service container, no Kafka, so this
+// test SKIPS (not fails) when KAFKA_BROKERS is unset, mirroring
+// labor-performance's identical
+// internal/adapters/inbound/kafka/consumer_integration_test.go
+// convention. Run locally with:
+//
+//	KAFKA_BROKERS=localhost:9092 go test -tags=integration ./internal/adapters/outbound/kafkacatalog/...
 func TestNewConsumer_TwoInstancesInARow_BothReplayFully(t *testing.T) {
-	brokers := []string{"localhost:9092"}
+	brokersCSV := os.Getenv("KAFKA_BROKERS")
+	if brokersCSV == "" {
+		t.Skip("KAFKA_BROKERS not set; skipping kafka integration test")
+	}
+	brokers := []string{brokersCSV}
 	topic := "warehouse.process-path-management.events.itest2"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
