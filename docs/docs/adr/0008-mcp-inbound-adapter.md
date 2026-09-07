@@ -13,6 +13,29 @@ description: Expose this bounded context to the AI ecosystem via an MCP server b
 **Accepted.** First implementation is `fulfillment-execution`; this ADR is the
 reference the other four bounded contexts copy.
 
+**Addendum (2026-09-07) — deployable.** Until this date `cmd/mcp` existed only
+as code: the Dockerfile did not build it, the Helm chart had no MCP workload,
+and the binary mounted the authenticated MCP handler as its root handler with
+no health endpoint (so a Kubernetes probe would have been answered 401).
+`feature/mcp-deployment` closes that gap:
+
+- the image now carries `/app/mcp` next to the other three binaries;
+- `cmd/mcp` serves `GET /healthz` **unauthenticated** and mounts the MCP
+  Streamable HTTP handler at **both** `/` and `/mcp` (the latter matches
+  warehouse-ops-agent's `*_MCP_ENDPOINT` convention);
+- the chart gains `mcp-deployment.yaml`, `mcp-service.yaml` (ClusterIP
+  `<release>-mcp`, port 8090) and `mcp-secret.yaml` (`MCP_READ_KEY` /
+  `MCP_READWRITE_KEY`), all gated on `mcp.enabled` (default `false`), with
+  `app.kubernetes.io/component: mcp` on selector and template so the pod is
+  distinguishable from the OLTP/projector/reports pods sharing the base
+  selector.
+
+Deployment to the `warehouse` kind cluster is wired from `warehouse-infra`
+(`terraform/services.tf` sets `mcp.enabled` + random keys;
+`terraform/ops-agent.tf` points warehouse-ops-agent at
+`http://fulfillment-execution-mcp.warehouse-systems.svc.cluster.local:8090/mcp`)
+and is recorded there once applied.
+
 ## Context
 
 The platform is being connected to the AI ecosystem (Claude, Cursor, ChatGPT,

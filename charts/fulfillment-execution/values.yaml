@@ -215,3 +215,45 @@ analytics:
       requests:
         cpu: 50m
         memory: 64Mi
+
+# ---------------------------------------------------------------------------
+# MCP server (ADR-0008). When enabled, deploys `cmd/mcp` — the Model Context
+# Protocol inbound adapter — as its own Deployment + ClusterIP Service
+# (`<release>-mcp`, port 8090). It runs the SAME read use cases over the SAME
+# OLTP database as the main deployment (it reuses database.url /
+# database.existingSecret), speaks MCP Streamable HTTP at both `/` and
+# `/mcp`, and answers `GET /healthz` unauthenticated for the probes.
+# Auth is a static bearer key per scope: readKey (read tools) and
+# readWriteKey (read + write tools). With neither set the server starts but
+# rejects every request (fail closed).
+# ---------------------------------------------------------------------------
+mcp:
+  enabled: false
+  replicaCount: 1
+  httpAddr: ":8090"       # MCP_ADDR — Streamable HTTP at / and /mcp, /healthz
+  logLevel: "info"
+  service:
+    type: ClusterIP
+    port: 8090
+    targetPort: 8090
+  # Bearer keys written to the chart-managed Secret `<release>-mcp-keys`.
+  # Supply real values via a values override / --set; never commit them.
+  readKey: ""
+  readWriteKey: ""
+  # When set, the keys are read from this pre-existing Secret (which must
+  # carry the MCP_READ_KEY and MCP_READWRITE_KEY data keys) and no Secret is
+  # created by the chart.
+  existingSecret: ""
+  # Base URL of the fulfillment-reports REST service, which backs the
+  # get_fulfillment_throughput_report tool. Empty means: derive it from the
+  # chart's own reports Service when analytics.enabled is true, otherwise
+  # leave the tool unregistered.
+  reportsBaseUrl: ""
+  extraEnv: []
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 64Mi
