@@ -64,3 +64,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "fulfillment-execution.reportsFullname" -}}
 {{- printf "%s-reports" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
+
+{{- define "fulfillment-execution.mcpFullname" -}}
+{{- printf "%s-mcp" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "fulfillment-execution.mcpSecretName" -}}
+{{- if .Values.mcp.existingSecret }}
+{{- .Values.mcp.existingSecret }}
+{{- else }}
+{{- printf "%s-mcp-keys" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
