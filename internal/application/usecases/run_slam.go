@@ -14,6 +14,9 @@ type RunSlam struct {
 	Packages  ports.PackageRepo
 	Publisher ports.EventPublisher
 	Clock     ports.Clock
+	// UnitOfWork brackets Save + Publish atomically (ADR 0020); nil runs
+	// them back to back.
+	UnitOfWork ports.UnitOfWork
 }
 
 // Execute weighs packageId against expectedWeight and records the outcome.
@@ -31,18 +34,16 @@ func (uc *RunSlam) Execute(ctx context.Context, packageId shared.PackageId, actu
 	if err != nil {
 		return err
 	}
-	if err := uc.Packages.Save(ctx, p); err != nil {
-		return err
-	}
-
-	if !labelApplied {
-		if err := uc.Publisher.Publish(ctx,
-			shared.NewWeightDiscrepancyDetected(packageId, expectedWeight, actualWeight, now),
-			shared.NewPackageDiverted(packageId, now),
-		); err != nil {
+	return atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		if err := uc.Packages.Save(ctx, p); err != nil {
 			return err
 		}
-		return nil
-	}
-	return uc.Publisher.Publish(ctx, shared.NewLabelApplied(packageId, now))
+		if !labelApplied {
+			return uc.Publisher.Publish(ctx,
+				shared.NewWeightDiscrepancyDetected(packageId, expectedWeight, actualWeight, now),
+				shared.NewPackageDiverted(packageId, now),
+			)
+		}
+		return uc.Publisher.Publish(ctx, shared.NewLabelApplied(packageId, now))
+	})
 }

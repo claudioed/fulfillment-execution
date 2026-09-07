@@ -14,6 +14,11 @@ type ExpireLeases struct {
 	Tasks     ports.TaskRepo
 	Publisher ports.EventPublisher
 	Clock     ports.Clock
+	// UnitOfWork brackets each freed task's Save + Publish atomically
+	// (ADR 0020); nil runs them back to back. One scope per freed task, so
+	// a failure part-way through the sweep leaves the already-freed tasks
+	// committed (the sweep is re-run on the next tick anyway).
+	UnitOfWork ports.UnitOfWork
 }
 
 // Execute scans every Claimed task and frees the ones whose lease has expired.
@@ -30,10 +35,13 @@ func (uc *ExpireLeases) Execute(ctx context.Context) (int, error) {
 		if !t.ExpireLeaseIfDue(now) {
 			continue
 		}
-		if err := uc.Tasks.Save(ctx, t); err != nil {
-			return freed, err
-		}
-		if err := uc.Publisher.Publish(ctx, shared.NewLeaseExpired(t.Id(), now)); err != nil {
+		err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+			if err := uc.Tasks.Save(ctx, t); err != nil {
+				return err
+			}
+			return uc.Publisher.Publish(ctx, shared.NewLeaseExpired(t.Id(), now))
+		})
+		if err != nil {
 			return freed, err
 		}
 		freed++

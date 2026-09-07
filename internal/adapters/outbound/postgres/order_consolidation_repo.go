@@ -23,7 +23,7 @@ func NewOrderConsolidationRepo(pool *pgxpool.Pool) *OrderConsolidationRepo {
 }
 
 func (r *OrderConsolidationRepo) Save(ctx context.Context, oc *consolidation.OrderConsolidation) error {
-	_, err := r.pool.Exec(ctx, `
+	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
 		INSERT INTO order_consolidations (order_ref, required_lines, arrived_lines)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (order_ref) DO UPDATE SET
@@ -39,7 +39,7 @@ func (r *OrderConsolidationRepo) FindByOrderRef(ctx context.Context, orderRef sh
 		requiredLines  []string
 		arrivedLines   []string
 	)
-	row := r.pool.QueryRow(ctx, `
+	row := querierFrom(ctx, r.pool).QueryRow(ctx, `
 		SELECT order_ref, required_lines, arrived_lines
 		FROM order_consolidations WHERE order_ref = $1
 	`, string(orderRef))
