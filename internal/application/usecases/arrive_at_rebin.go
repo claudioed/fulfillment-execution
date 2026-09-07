@@ -22,6 +22,10 @@ type ArriveAtRebin struct {
 	CreateTask     *CreateTask
 	Publisher      ports.EventPublisher
 	Clock          ports.Clock
+	// UnitOfWork brackets the consolidation Save, the nested CreateTask
+	// (whose own scope joins this one) and every Publish in ONE atomic
+	// scope (ADR 0020); nil runs them back to back.
+	UnitOfWork ports.UnitOfWork
 }
 
 // Execute records lineId's arrival at Rebin for orderRef. If this is the
@@ -77,19 +81,24 @@ func (uc *ArriveAtRebin) Execute(
 		return nil
 	}
 
-	if err := uc.Publisher.Publish(ctx, shared.NewItemArrivedAtRebin(orderRef, lineId, now)); err != nil {
-		return err
-	}
-
-	if !oc.IsComplete() {
-		return uc.Consolidations.Save(ctx, oc)
-	}
-
-	if err := uc.Consolidations.Save(ctx, oc); err != nil {
-		return err
-	}
-	if _, err := uc.CreateTask.Execute(ctx, task.Pack, packCPT, orderRef, packRequired, packFragile, packGiftWrap); err != nil {
-		return err
-	}
-	return uc.Publisher.Publish(ctx, shared.NewOrderConsolidated(orderRef, now))
+	// The consolidation state is saved FIRST and the arrival event
+	// published after it, inside the same scope: with a transactional
+	// outbox the publish is itself a write bound to this transaction, so
+	// the order only matters for the nil-UnitOfWork fallback, where
+	// "state, then event" is the convention every other use case follows.
+	return atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		if err := uc.Consolidations.Save(ctx, oc); err != nil {
+			return err
+		}
+		if err := uc.Publisher.Publish(ctx, shared.NewItemArrivedAtRebin(orderRef, lineId, now)); err != nil {
+			return err
+		}
+		if !oc.IsComplete() {
+			return nil
+		}
+		if _, err := uc.CreateTask.Execute(ctx, task.Pack, packCPT, orderRef, packRequired, packFragile, packGiftWrap); err != nil {
+			return err
+		}
+		return uc.Publisher.Publish(ctx, shared.NewOrderConsolidated(orderRef, now))
+	})
 }

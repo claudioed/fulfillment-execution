@@ -100,6 +100,7 @@ const sidebars: SidebarsConfig = {
         'adr/0017-process-path-catalogue-as-configuration',
         'adr/0018-installed-capacity-read-endpoint',
         'adr/0019-standard-metrics-convention',
+        'adr/0020-transactional-outbox',
       ],
     },
   ],

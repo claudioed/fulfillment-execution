@@ -24,6 +24,9 @@ type ClaimNext struct {
 	LeaseDuration time.Duration
 	// Metrics is optional: nil means this use case runs uninstrumented.
 	Metrics ports.Metrics
+	// UnitOfWork brackets Save + Publish atomically (ADR 0020); nil runs
+	// them back to back.
+	UnitOfWork ports.UnitOfWork
 }
 
 // Execute finds the best-fit pending task for stationId and leases it.
@@ -52,10 +55,13 @@ func (uc *ClaimNext) Execute(ctx context.Context, stationId shared.StationId, ta
 	for _, t := range candidates {
 		err := t.Claim(stationId, st.Capabilities(), now, leaseDuration)
 		if err == nil {
-			if err := uc.Tasks.Save(ctx, t); err != nil {
-				return nil, err
-			}
-			if err := uc.Publisher.Publish(ctx, shared.NewTaskClaimed(t.Id(), stationId, now)); err != nil {
+			err := atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+				if err := uc.Tasks.Save(ctx, t); err != nil {
+					return err
+				}
+				return uc.Publisher.Publish(ctx, shared.NewTaskClaimed(t.Id(), stationId, now))
+			})
+			if err != nil {
 				return nil, err
 			}
 			if uc.Metrics != nil {

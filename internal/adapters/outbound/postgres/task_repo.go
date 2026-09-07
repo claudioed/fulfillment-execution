@@ -33,7 +33,7 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 		leaseExpiry = &lease.Expiry
 	}
 
-	_, err := r.pool.Exec(ctx, `
+	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
 		INSERT INTO tasks (id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE SET
@@ -53,7 +53,7 @@ func (r *TaskRepo) Save(ctx context.Context, t *task.Task) error {
 }
 
 func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, error) {
-	row := r.pool.QueryRow(ctx, `
+	row := querierFrom(ctx, r.pool).QueryRow(ctx, `
 		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
 		FROM tasks WHERE id = $1
 	`, string(id))
@@ -65,7 +65,7 @@ func (r *TaskRepo) FindById(ctx context.Context, id shared.TaskId) (*task.Task, 
 }
 
 func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, now time.Time) ([]*task.Task, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
 		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
 		FROM tasks
 		WHERE task_type = $1
@@ -80,7 +80,7 @@ func (r *TaskRepo) FindClaimableByType(ctx context.Context, taskType task.Type, 
 }
 
 func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
 		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
 		FROM tasks WHERE status = 'CLAIMED'
 	`)
@@ -93,14 +93,14 @@ func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 
 func (r *TaskRepo) CountByTypeAndStatus(ctx context.Context, taskType task.Type, status task.Status) (int, error) {
 	var count int
-	err := r.pool.QueryRow(ctx, `
+	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
 		SELECT COUNT(*) FROM tasks WHERE task_type = $1 AND status = $2
 	`, string(taskType), string(status)).Scan(&count)
 	return count, err
 }
 
 func (r *TaskRepo) FindByOrderRef(ctx context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
-	rows, err := r.pool.Query(ctx, `
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
 		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
 		FROM tasks WHERE order_ref = $1
 	`, string(orderRef))

@@ -27,7 +27,7 @@ func (r *StationRepo) Save(ctx context.Context, s *station.Station) error {
 		v := string(*s.Occupant())
 		occupant = &v
 	}
-	_, err := r.pool.Exec(ctx, `
+	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
 		INSERT INTO stations (id, capabilities, occupant)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (id) DO UPDATE SET capabilities = EXCLUDED.capabilities, occupant = EXCLUDED.occupant
@@ -41,7 +41,7 @@ func (r *StationRepo) FindById(ctx context.Context, id shared.StationId) (*stati
 		capabilities []string
 		occupant     *string
 	)
-	err := r.pool.QueryRow(ctx, `
+	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
 		SELECT id, capabilities, occupant FROM stations WHERE id = $1
 	`, string(id)).Scan(&stationId, &capabilities, &occupant)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -66,7 +66,7 @@ func (r *StationRepo) FindById(ctx context.Context, id shared.StationId) (*stati
 // filter it in Go.
 func (r *StationRepo) CountByCapability(ctx context.Context, capability shared.Capability) (int, error) {
 	var count int
-	err := r.pool.QueryRow(ctx, `
+	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
 		SELECT COUNT(*) FROM stations WHERE $1 = ANY(capabilities)
 	`, string(capability)).Scan(&count)
 	return count, err

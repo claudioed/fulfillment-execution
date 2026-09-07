@@ -60,22 +60,30 @@ type AnalyticsPublisher struct {
 // AnalyticsTopic on brokers. newId mints the envelope event_id; tasks is used
 // to enrich task-scoped events with their process path.
 func NewAnalyticsPublisher(brokers []string, tasks ports.TaskRepo, newId func() string) *AnalyticsPublisher {
-	return &AnalyticsPublisher{
-		Writer: &kafkago.Writer{
-			Addr:                   kafkago.TCP(brokers...),
-			Topic:                  AnalyticsTopic,
-			Balancer:               &kafkago.LeastBytes{},
-			AllowAutoTopicCreation: true,
-		},
-		Tasks: tasks,
-		NewId: newId,
-	}
+	return NewAnalyticsPublisherWithWriter(&kafkago.Writer{
+		Addr:                   kafkago.TCP(brokers...),
+		Topic:                  AnalyticsTopic,
+		Balancer:               &kafkago.LeastBytes{},
+		AllowAutoTopicCreation: true,
+	}, tasks, newId)
 }
 
-// Publish emits every event in evts onto AnalyticsTopic. Events with no
-// analytics payload (an unrecognised type) are skipped rather than erroring,
-// so the caller can hand it the full event stream indiscriminately.
-func (p *AnalyticsPublisher) Publish(ctx context.Context, evts ...shared.DomainEvent) error {
+// NewAnalyticsPublisherWithWriter constructs an AnalyticsPublisher over an
+// explicit Writer. When used only as an Encoder (the outbox configuration,
+// ADR 0020) the writer may be nil — Encode never touches it.
+func NewAnalyticsPublisherWithWriter(w Writer, tasks ports.TaskRepo, newId func() string) *AnalyticsPublisher {
+	return &AnalyticsPublisher{Writer: w, Tasks: tasks, NewId: newId}
+}
+
+// Encode builds the AnalyticsEnvelope wire form of every event in evts
+// WITHOUT sending it. Events with no analytics payload (an unrecognised
+// type) are skipped rather than erroring, so the caller can hand it the
+// full event stream indiscriminately. The task_type enrichment lookup
+// happens here, so inside a use case's transaction (the outbox path) it
+// sees the just-saved task. The active span on ctx is injected into each
+// message's headers.
+func (p *AnalyticsPublisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]Encoded, error) {
+	var out []Encoded
 	for _, e := range evts {
 		eventType, key, data, ok := p.marshalData(ctx, e)
 		if !ok {
@@ -91,10 +99,69 @@ func (p *AnalyticsPublisher) Publish(ctx context.Context, evts ...shared.DomainE
 		}
 		payload, err := json.Marshal(env)
 		if err != nil {
-			return fmt.Errorf("kafka: marshal analytics envelope: %w", err)
+			return nil, fmt.Errorf("kafka: marshal analytics envelope: %w", err)
 		}
-		if err := p.write(ctx, eventType, key, payload); err != nil {
+		enc := Encoded{Topic: AnalyticsTopic, EventType: eventType, Key: []byte(key), Value: payload}
+		observability.InjectKafkaTrace(ctx, &enc.Headers)
+		out = append(out, enc)
+	}
+	return out, nil
+}
+
+// Publish emits every event in evts onto AnalyticsTopic, each encoded and
+// written inside its own "kafka.publish <topic>" producer span. Events
+// outside the analytics contract are skipped.
+func (p *AnalyticsPublisher) Publish(ctx context.Context, evts ...shared.DomainEvent) error {
+	for _, e := range evts {
+		if !inAnalyticsContract(e) {
+			continue
+		}
+		if err := p.publishOne(ctx, e); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// inAnalyticsContract reports whether marshalData knows e, without the
+// repo lookup marshalData performs — so Publish can skip foreign events
+// before opening a span, and Encode's lookup runs exactly once per event.
+func inAnalyticsContract(e shared.DomainEvent) bool {
+	switch e.(type) {
+	case shared.TaskCreated, shared.TaskClaimed, shared.LeaseExpired, shared.TaskCompleted, shared.ItemPicked,
+		shared.PackageSealed, shared.WeightDiscrepancyDetected, shared.LabelApplied, shared.PackageDiverted:
+		return true
+	default:
+		return false
+	}
+}
+
+// publishOne encodes and writes one event inside a producer span, so the
+// injected traceparent names the publish span itself and a broker error
+// is recorded on it.
+func (p *AnalyticsPublisher) publishOne(ctx context.Context, e shared.DomainEvent) error {
+	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
+		"kafka.publish "+AnalyticsTopic,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKafka,
+			semconv.MessagingDestinationName(AnalyticsTopic),
+			semconv.MessagingOperationName("publish"),
+		),
+	)
+	defer span.End()
+
+	encoded, err := p.Encode(ctx, e)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	for _, enc := range encoded {
+		if err := p.Writer.WriteMessages(ctx, enc.message()); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return fmt.Errorf("kafka: publish %s analytics event: %w", enc.EventType, err)
 		}
 	}
 	return nil
@@ -179,32 +246,6 @@ func mustMarshal(v any) json.RawMessage {
 		panic(fmt.Sprintf("kafka: marshal analytics data: %v", err))
 	}
 	return b
-}
-
-// write publishes one already-marshalled envelope inside a
-// "kafka.publish <topic>" producer span, injecting that span's context into
-// the message headers so the projector's consume span becomes its child.
-func (p *AnalyticsPublisher) write(ctx context.Context, eventType, key string, payload []byte) error {
-	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
-		"kafka.publish "+AnalyticsTopic,
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(
-			semconv.MessagingSystemKafka,
-			semconv.MessagingDestinationName(AnalyticsTopic),
-			semconv.MessagingOperationName("publish"),
-		),
-	)
-	defer span.End()
-
-	msg := kafkago.Message{Key: []byte(key), Value: payload}
-	observability.InjectKafkaTrace(ctx, &msg.Headers)
-
-	if err := p.Writer.WriteMessages(ctx, msg); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("kafka: publish %s analytics event: %w", eventType, err)
-	}
-	return nil
 }
 
 // Close releases the underlying Kafka writer.

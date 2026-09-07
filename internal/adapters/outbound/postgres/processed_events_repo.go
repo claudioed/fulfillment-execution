@@ -18,7 +18,7 @@ func NewProcessedEventsRepo(pool *pgxpool.Pool) *ProcessedEventsRepo {
 }
 
 func (r *ProcessedEventsRepo) MarkProcessed(ctx context.Context, eventId string) (bool, error) {
-	tag, err := r.pool.Exec(ctx,
+	tag, err := querierFrom(ctx, r.pool).Exec(ctx,
 		`INSERT INTO processed_events (event_id, processed_at) VALUES ($1, now()) ON CONFLICT (event_id) DO NOTHING`,
 		eventId)
 	if err != nil {
