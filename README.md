@@ -122,6 +122,35 @@ curl "localhost:8092/reports/throughput/freshness"
 The projector is the **only** writer of the analytical DB; the reports binary
 connects read-only. The OLTP `cmd/execution` never opens the analytical DB.
 
+### Running the MCP server in Kubernetes
+
+`cmd/mcp` (the Model Context Protocol inbound adapter, [ADR-0008](docs/docs/adr/0008-mcp-inbound-adapter.md))
+is built into the same image as `/app/mcp` and deployed by the Helm chart as a
+separate Deployment + ClusterIP Service `<release>-mcp` on port **8090** when
+`mcp.enabled=true`. It runs the same read use cases over the same OLTP
+database as the main deployment (it reuses `database.url` /
+`database.existingSecret`), speaks MCP Streamable HTTP at both `/` and `/mcp`,
+and serves `GET /healthz` **unauthenticated** for the liveness/readiness
+probes. Auth is a static bearer key per scope, supplied via `mcp.readKey`
+(read tools) and `mcp.readWriteKey` (read + write tools) and stored in the
+chart-managed Secret `<release>-mcp-keys` (or `mcp.existingSecret`); with no
+key configured the server starts but rejects every request. When
+`analytics.enabled=true` the pod also gets `REPORTS_BASE_URL` pointed at the
+chart's reports Service so the `get_fulfillment_throughput_report` tool is
+registered (override with `mcp.reportsBaseUrl`). Locally:
+
+```sh
+MCP_READ_KEY=dev-read go run ./cmd/mcp        # :8090 (MCP_ADDR)
+curl localhost:8090/healthz                   # {"status":"ok"} — no key needed
+curl -X POST localhost:8090/mcp -H 'Authorization: Bearer dev-read' \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+In the `warehouse-infra` kind cluster the chart is enabled and keyed from
+Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
+`http://fulfillment-execution-mcp.warehouse-systems.svc.cluster.local:8090/mcp`.
+
 ### Configuration
 
 | Env var        | Default | Purpose                          |
@@ -135,6 +164,9 @@ connects read-only. The OLTP `cmd/execution` never opens the analytical DB.
 | `ANALYTICS_DATABASE_URL` | (unset) | Analytical DB DSN, read by `cmd/fulfillment-projector` (read-write) and `cmd/fulfillment-reports` (read-only role). MUST be a different database from `DATABASE_URL` |
 | `ANALYTICS_MIGRATIONS_PATH` | `migrations/analytics` | Analytical golang-migrate migrations the projector runs on start |
 | `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
+| `MCP_ADDR` | `:8090` | `cmd/mcp` listen address — MCP Streamable HTTP at `/` and `/mcp`, unauthenticated `GET /healthz` |
+| `MCP_READ_KEY` / `MCP_READWRITE_KEY` | (unset) | `cmd/mcp` static bearer keys granting the read / read-write scope (ADR-0008). Neither set: every request is rejected |
+| `REPORTS_BASE_URL` | (unset) | `cmd/mcp` only: base URL of `cmd/fulfillment-reports`; when set, registers the `get_fulfillment_throughput_report` tool |
 | `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTel Collector's OTLP/gRPC address (see [Observability](#observability)) |
 | `OTEL_SERVICE_NAME` | `fulfillment-execution` | `service.name` resource attribute |
