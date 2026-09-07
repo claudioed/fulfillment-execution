@@ -4,55 +4,43 @@ package kafkacatalog
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"testing"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+	"github.com/testcontainers/testcontainers-go"
+	tckafka "github.com/testcontainers/testcontainers-go/modules/kafka"
 )
 
-// TestNewConsumer_TwoInstancesInARow_BothReplayFully is the real
-// regression test for the "shared consumer group" bug this package
-// shipped with: a second NewConsumer call (simulating a service
-// restart) must independently replay Topic's full history into its own
-// cache, NOT resume from wherever the first instance's consumer group
-// left off.
-//
-// Requires KAFKA_BROKERS to point at a real, reachable broker (e.g.
-// KAFKA_BROKERS=localhost:9092) -- this fleet's own CI `integration`
-// job only provisions a Postgres service container, no Kafka, so this
-// test SKIPS (not fails) when KAFKA_BROKERS is unset, mirroring
-// labor-performance's identical
-// internal/adapters/inbound/kafka/consumer_integration_test.go
-// convention. Run locally with:
-//
-//	KAFKA_BROKERS=localhost:9092 go test -tags=integration ./internal/adapters/outbound/kafkacatalog/...
+// TestNewConsumer_TwoInstancesInARow_BothReplayFully is the regression test
+// for the shared-consumer-group bug: each process must replay the complete
+// topic history into its own cache. It owns its broker via Testcontainers so
+// the integration job runs this assertion rather than silently skipping it.
 func TestNewConsumer_TwoInstancesInARow_BothReplayFully(t *testing.T) {
-	brokersCSV := os.Getenv("KAFKA_BROKERS")
-	if brokersCSV == "" {
-		t.Skip("KAFKA_BROKERS not set; skipping kafka integration test")
-	}
-	brokers := []string{brokersCSV}
-	topic := "warehouse.process-path-management.events.itest2"
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	writer := &kafkago.Writer{Addr: kafkago.TCP(brokers...), Topic: topic, AllowAutoTopicCreation: true}
-	var publishErr error
-	for attempt := 0; attempt < 5; attempt++ {
-		publishErr = writer.WriteMessages(ctx, kafkago.Message{
-			Value: []byte(`{"event_type":"ProcessPathCreated","data":{"path_id":"ITEST2","match_prefix":"itest2","direct":true,"required_capabilities":["itest2"]}}`),
-		})
-		if publishErr == nil {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
+	container, err := tckafka.Run(ctx, "confluentinc/confluent-local:7.6.1", tckafka.WithClusterID("fulfillment-execution-kafkacatalog-itest"))
+	if err != nil {
+		t.Fatalf("start Kafka container: %v", err)
 	}
-	if publishErr != nil {
-		t.Fatalf("seed publish: %v", publishErr)
+	t.Cleanup(func() { _ = testcontainers.TerminateContainer(container) })
+
+	brokers, err := container.Brokers(ctx)
+	if err != nil {
+		t.Fatalf("Kafka brokers: %v", err)
 	}
-	_ = writer.Close()
+	topic := fmt.Sprintf("warehouse.process-path-management.events.itest-%d", time.Now().UnixNano())
+	createTopic(t, ctx, brokers[0], topic)
+
+	writer := &kafkago.Writer{Addr: kafkago.TCP(brokers...), Topic: topic}
+	t.Cleanup(func() { _ = writer.Close() })
+	if err := writer.WriteMessages(ctx, kafkago.Message{
+		Value: []byte(`{"event_type":"ProcessPathCreated","data":{"path_id":"ITEST","match_prefix":"itest","direct":true,"required_capabilities":["itest"]}}`),
+	}); err != nil {
+		t.Fatalf("seed publish: %v", err)
+	}
 
 	target, err := newTargetOffsets(ctx, brokers, topic)
 	if err != nil {
@@ -62,35 +50,68 @@ func TestNewConsumer_TwoInstancesInARow_BothReplayFully(t *testing.T) {
 		t.Fatal("expected at least one partition with a message")
 	}
 
-	// First instance: real reader under a real unique group, consumes
-	// the message and commits.
+	// First instance consumes and commits. The second instance must use a
+	// different group and still replay from FirstOffset.
 	group1 := uniqueConsumerGroup()
 	reader1 := kafkago.NewReader(kafkago.ReaderConfig{Brokers: brokers, Topic: topic, GroupID: group1, StartOffset: kafkago.FirstOffset})
-	if _, err := reader1.ReadMessage(ctx); err != nil {
+	msg1, err := reader1.ReadMessage(ctx)
+	if err != nil {
 		t.Fatalf("first reader ReadMessage: %v", err)
 	}
-	if err := reader1.CommitMessages(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
+	if err := reader1.CommitMessages(ctx, msg1); err != nil {
+		t.Fatalf("first reader commit: %v", err)
 	}
-	_ = reader1.Close()
+	if err := reader1.Close(); err != nil {
+		t.Fatalf("first reader close: %v", err)
+	}
 
-	// Second instance: a genuinely DIFFERENT unique group (simulating a
-	// restart), must ALSO see the message from FirstOffset -- this is
-	// exactly what a fixed shared group name would break.
 	group2 := uniqueConsumerGroup()
 	if group1 == group2 {
-		t.Fatal("expected uniqueConsumerGroup to produce distinct ids across calls")
+		t.Fatal("expected distinct consumer groups")
 	}
 	reader2 := kafkago.NewReader(kafkago.ReaderConfig{Brokers: brokers, Topic: topic, GroupID: group2, StartOffset: kafkago.FirstOffset})
-	defer func() { _ = reader2.Close() }()
-
-	readCtx, readCancel := context.WithTimeout(ctx, 10*time.Second)
-	defer readCancel()
-	msg, err := reader2.ReadMessage(readCtx)
+	t.Cleanup(func() { _ = reader2.Close() })
+	msg2, err := reader2.ReadMessage(ctx)
 	if err != nil {
-		t.Fatalf("second (independent) reader failed to see the same message: %v", err)
+		t.Fatalf("second independent reader failed to replay: %v", err)
 	}
-	if msg.Offset != 0 {
-		t.Fatalf("expected the second instance to replay from offset 0, got offset %d", msg.Offset)
+	if msg2.Offset != 0 {
+		t.Fatalf("expected second instance to replay from offset 0, got %d", msg2.Offset)
 	}
+}
+
+func createTopic(t *testing.T, ctx context.Context, broker, topic string) {
+	t.Helper()
+	conn, err := kafkago.DialContext(ctx, "tcp", broker)
+	if err != nil {
+		t.Fatalf("dial Kafka controller: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+
+	controller, err := conn.Controller()
+	if err != nil {
+		t.Fatalf("find Kafka controller: %v", err)
+	}
+	controllerConn, err := kafkago.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", controller.Host, controller.Port))
+	if err != nil {
+		t.Fatalf("dial Kafka controller %s:%d: %v", controller.Host, controller.Port, err)
+	}
+	defer func() { _ = controllerConn.Close() }()
+	if err := controllerConn.CreateTopics(kafkago.TopicConfig{Topic: topic, NumPartitions: 1, ReplicationFactor: 1}); err != nil {
+		t.Fatalf("create topic %s: %v", topic, err)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		partitions, err := conn.ReadPartitions(topic)
+		if err == nil && len(partitions) == 1 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("wait for topic %s leader: %v", topic, ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	t.Fatalf("topic %s leader was not ready before timeout", topic)
 }
