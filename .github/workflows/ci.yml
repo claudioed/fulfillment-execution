@@ -27,12 +27,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: false          # golangci-lint-action manages its own cache
-      - uses: golangci/golangci-lint-action@v9
+uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.13.1
           args: --timeout=5m
@@ -44,8 +44,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
 
@@ -74,7 +74,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v7
+uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: coverage
@@ -87,8 +87,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
       - name: Run BDD (godog/Gherkin) acceptance tests
@@ -114,8 +114,8 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
       - name: Integration tests
@@ -137,8 +137,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
       - name: Install gremlins
@@ -155,8 +155,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
       - name: Install govulncheck
@@ -169,8 +169,8 @@ jobs:
     timeout-minutes: 90
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
       - name: Install gremlins
@@ -185,8 +185,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "20"
       - name: Install Spectral
@@ -206,17 +206,17 @@ jobs:
     timeout-minutes: 10
     if: github.event_name == 'pull_request' && github.base_ref == 'main'
     steps:
-      - uses: actions/checkout@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: azure/setup-helm@v5
+uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
           version: v3.16.4
-      - uses: actions/setup-python@v7
+uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.x"
           check-latest: true
-      - uses: helm/chart-testing-action@v2.8.0
+uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
       - name: Run chart-testing (lint)
         run: ct lint --charts charts/fulfillment-execution --validate-maintainers=false --check-version-increment=false
 
@@ -227,8 +227,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
       - name: Architecture fitness tests
@@ -252,10 +252,10 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: docker/setup-buildx-action@v4
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       - name: Build image (local only, not pushed)
-        uses: docker/build-push-action@v7
+uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           platforms: linux/amd64
@@ -265,7 +265,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Trivy scan (SARIF, always uploaded)
-        uses: aquasecurity/trivy-action@v0.36.0
+uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         if: always()
         with:
           image-ref: 'fulfillment-execution:scan'
@@ -274,12 +274,12 @@ jobs:
           severity: 'CRITICAL,HIGH,MEDIUM'
           ignore-unfixed: true
       - name: Upload Trivy SARIF to Security tab
-        uses: github/codeql-action/upload-sarif@v4
+uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         if: always()
         with:
           sarif_file: 'trivy-results.sarif'
       - name: "Trivy scan (blocking gate: CRITICAL/HIGH with a fix available)"
-        uses: aquasecurity/trivy-action@v0.36.0
+uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: 'fulfillment-execution:scan'
           format: 'table'
@@ -300,18 +300,18 @@ jobs:
       contents: read
       id-token: write   # cosign keyless signing (Fulcio/Rekor via GitHub OIDC)
     steps:
-      - uses: actions/checkout@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Set image tag (short SHA)
         run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v4
+uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4
+uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v7
+uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
           platforms: linux/amd64
@@ -322,13 +322,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
       - name: Sign the published image (keyless, GitHub OIDC identity)
         run: |
           cosign sign --yes \
             claudioed/fulfillment-execution@${{ steps.build.outputs.digest }}
       - name: Generate SBOM (SPDX) for the published image
-        uses: anchore/sbom-action@v0
+uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: claudioed/fulfillment-execution@${{ steps.build.outputs.digest }}
           format: spdx-json
@@ -340,7 +340,7 @@ jobs:
             --type spdxjson \
             claudioed/fulfillment-execution@${{ steps.build.outputs.digest }}
       - name: Upload SBOM as a workflow artifact
-        uses: actions/upload-artifact@v7
+uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sbom
           path: sbom.spdx.json
@@ -363,7 +363,7 @@ jobs:
       contents: write
       packages: write
     steps:
-      - uses: actions/checkout@v7
+uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Compute next version
@@ -381,9 +381,9 @@ jobs:
           echo "version=$new" >> "$GITHUB_OUTPUT"
       - name: Set image tag (short SHA)
         run: echo "SHORT_SHA=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
-      - uses: docker/setup-buildx-action@v4
+uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       - name: Log in to Docker Hub
-        uses: docker/login-action@v4
+uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -413,7 +413,7 @@ jobs:
           git tag ${{ steps.version.outputs.version }}
           git push origin ${{ steps.version.outputs.version }}
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v3
+uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ steps.version.outputs.version }}
           generate_release_notes: true
