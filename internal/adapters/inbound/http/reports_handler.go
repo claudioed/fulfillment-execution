@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/riandyrn/otelchi"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/auth"
 	"github.com/claudioed/fulfillment-execution/internal/analytics/report"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
@@ -136,10 +137,15 @@ func writeReportInternal(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // NewReportsRouter builds the chi router for the fulfillment-reports reader
-// service. A nil logger falls back to slog.Default().
-func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger) *chi.Mux {
+// service. A nil logger falls back to slog.Default(). With WithAuth every
+// /reports route requires the read scope (ADR-0021); /healthz stays open.
+func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	var cfg routerConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
 
 	r := chi.NewRouter()
@@ -154,8 +160,12 @@ func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger) *chi.Mux {
 	r.Use(middleware.Recoverer)
 
 	r.Get("/healthz", h.GetHealthz)
-	r.Get("/reports/throughput", h.GetThroughput)
-	r.Get("/reports/throughput/freshness", h.GetFreshness)
+
+	r.Group(func(r chi.Router) {
+		r.Use(cfg.authMiddleware(logger, func(*http.Request) auth.Scope { return auth.ScopeRead }))
+		r.Get("/reports/throughput", h.GetThroughput)
+		r.Get("/reports/throughput/freshness", h.GetFreshness)
+	})
 
 	return r
 }
