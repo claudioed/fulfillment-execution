@@ -3,12 +3,6 @@
 // cases, and those to the inbound MCP adapter, then serves MCP over Streamable
 // HTTP. It is a second, independent deployable alongside cmd/execution (the
 // HTTP service), per ADR-0008.
-//
-// Auth is a static bearer key (no IdP): set API_READ_KEY / API_READWRITE_KEY
-// (or the MCP_READ_KEY / MCP_READWRITE_KEY fallbacks) from a Kubernetes
-// Secret. A request must present a valid key; the scope it grants gates the
-// tools. The keys are resolved by the same auth package the REST surface
-// uses (ADR-0021), so one Secret can serve both.
 package main
 
 import (
@@ -20,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/auth"
 	inboundmcp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/mcp"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/memory"
@@ -104,10 +97,9 @@ func run() error {
 	}
 	server := inboundmcp.NewServer(deps)
 
-	authn := inboundmcp.NewStaticKeyAuth(authKeys(logger))
-	// The authenticated MCP handler is mounted at "/" and "/mcp"; GET /healthz
-	// is served unauthenticated for the Kubernetes probes (see router.go).
-	handler := newRouter(inboundmcp.Handler(server, authn))
+	// The MCP handler is mounted at "/" and "/mcp", unauthenticated; GET
+	// /healthz is served for the Kubernetes probes (see router.go).
+	handler := newRouter(inboundmcp.Handler(server))
 
 	srv := &http.Server{Addr: httpAddr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 
@@ -125,21 +117,6 @@ func run() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return srv.Shutdown(ctx)
-}
-
-// authKeys reads the bearer keys from the environment via the fleet
-// convention (API_READ_KEY / API_READWRITE_KEY, falling back to MCP_READ_KEY /
-// MCP_READWRITE_KEY). The read key grants read scope; the read-write key
-// grants read-write. If neither is set the server still starts but rejects
-// every request (fail closed) — a missing key must never mean "open to
-// everyone". The keys themselves are never logged.
-func authKeys(logger *slog.Logger) map[string]inboundmcp.Scope {
-	keys := auth.KeysFromEnv(os.Getenv)
-	if len(keys) == 0 {
-		logger.Warn("no API_READ_KEY/API_READWRITE_KEY (or MCP_READ_KEY/MCP_READWRITE_KEY) set; server will reject all requests")
-	}
-	logger.Info("MCP auth configured", "keys", len(keys))
-	return keys
 }
 
 func newLogger(level string) *slog.Logger {

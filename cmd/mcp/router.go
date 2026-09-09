@@ -15,10 +15,8 @@ import (
 //   - The MCP Streamable HTTP endpoint is mounted at BOTH "/" and "/mcp":
 //     "/" keeps the original root mount working, "/mcp" matches the
 //     warehouse-ops-agent `*_MCP_ENDPOINT` convention and the docs' examples.
-//     Every request to either path still goes through the bearer check.
 //
-// Anything else is a 404 — the router is deliberately not a catch-all, so an
-// unauthenticated probe of a random path does not reach the MCP handler.
+// Anything else is a 404 — the router is deliberately not a catch-all.
 func newRouter(mcpHandler http.Handler) http.Handler {
 	r := chi.NewRouter()
 	r.Get("/healthz", healthz)

@@ -80,36 +80,6 @@ database:
   existingSecret: ""
   existingSecretKey: "DATABASE_URL"
 
-# ---------------------------------------------------------------------------
-# REST identity (ADR-0021, adopting warehouse-ops-agent ADR 0005): static
-# bearer keys with read / read-write scopes, no IdP. Applies to the OLTP
-# deployment and the analytics reports deployment (GET /reports/* needs the
-# read scope); GET /healthz is always open for the probes.
-#   mode: enforce | log | off — rendered as AUTH_MODE. "log" lets every
-#         request through but logs "auth: would-reject" (rollout gate).
-#         With no key configured the binaries fall back to "off" with a WARN.
-#   readKey / readWriteKey: written to the chart-managed Secret
-#         `<release>-auth` as API_READ_KEY / API_READWRITE_KEY (only when
-#         non-empty). Supply real values via a values override / --set;
-#         never commit them. The MCP deployment keeps its own mcp.* keys
-#         (same binary-side fallback: API_* first, then MCP_*).
-#   existingSecret: read the keys from this pre-existing Secret instead
-#         (data keys API_READ_KEY, API_READWRITE_KEY, and optionally
-#         INVENTORY_STORAGE_API_KEY); no Secret is created by the chart.
-# ---------------------------------------------------------------------------
-auth:
-  mode: "enforce"
-  readKey: ""
-  readWriteKey: ""
-  existingSecret: ""
-
-# Outbound peer credentials. inventory-storage is called by the
-# PRODUCT_CLASSIFICATION_MODE=http adapter (ADR-0010); once inventory-storage
-# enforces REST auth this key (its READ key) is sent as a bearer token via
-# INVENTORY_STORAGE_API_KEY. Stored in the same `<release>-auth` Secret.
-inventoryStorage:
-  apiKey: ""
-
 # IMPORTANT: unlike the other three services, this one's inbound Kafka
 # consumer (WorkReleased -> CreateTask) starts UNCONDITIONALLY at boot and
 # always needs a reachable KAFKA_BROKERS value (the binary defaults to
@@ -252,10 +222,8 @@ analytics:
 # (`<release>-mcp`, port 8090). It runs the SAME read use cases over the SAME
 # OLTP database as the main deployment (it reuses database.url /
 # database.existingSecret), speaks MCP Streamable HTTP at both `/` and
-# `/mcp`, and answers `GET /healthz` unauthenticated for the probes.
-# Auth is a static bearer key per scope: readKey (read tools) and
-# readWriteKey (read + write tools). With neither set the server starts but
-# rejects every request (fail closed).
+# `/mcp`, and answers `GET /healthz` for the probes. This surface is
+# unauthenticated.
 # ---------------------------------------------------------------------------
 mcp:
   enabled: false
@@ -266,14 +234,6 @@ mcp:
     type: ClusterIP
     port: 8090
     targetPort: 8090
-  # Bearer keys written to the chart-managed Secret `<release>-mcp-keys`.
-  # Supply real values via a values override / --set; never commit them.
-  readKey: ""
-  readWriteKey: ""
-  # When set, the keys are read from this pre-existing Secret (which must
-  # carry the MCP_READ_KEY and MCP_READWRITE_KEY data keys) and no Secret is
-  # created by the chart.
-  existingSecret: ""
   # Base URL of the fulfillment-reports REST service, which backs the
   # get_fulfillment_throughput_report tool. Empty means: derive it from the
   # chart's own reports Service when analytics.enabled is true, otherwise

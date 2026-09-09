@@ -178,38 +178,3 @@ func TestClient_GetClassification_EscapesSKUInPath(t *testing.T) {
 		t.Fatalf("expected escaped sku in path, got %s", doer.req.URL.Path)
 	}
 }
-
-// Fleet REST identity (ADR-0021): the bearer header is present iff a token
-// is configured.
-func TestClient_GetClassification_BearerHeaderPresentIffConfigured(t *testing.T) {
-	t.Run("configured token is sent", func(t *testing.T) {
-		doer := &fakeDoer{resp: jsonResponse(http.StatusOK, `{"handlingTags": []}`)} //nolint:bodyclose
-		client := productclassification.NewClient("http://inventory-storage.local", doer, productclassification.WithBearerToken("inv-key"))
-		if _, err := client.GetClassification(context.Background(), "sku-1"); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got := doer.req.Header.Get("Authorization"); got != "Bearer inv-key" {
-			t.Fatalf("want Authorization: Bearer inv-key, got %q", got)
-		}
-	})
-	t.Run("empty token sends no header", func(t *testing.T) {
-		doer := &fakeDoer{resp: jsonResponse(http.StatusOK, `{"handlingTags": []}`)} //nolint:bodyclose
-		client := productclassification.NewClient("http://inventory-storage.local", doer, productclassification.WithBearerToken(""))
-		if _, err := client.GetClassification(context.Background(), "sku-1"); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got := doer.req.Header.Get("Authorization"); got != "" {
-			t.Fatalf("want no Authorization header, got %q", got)
-		}
-	})
-	t.Run("no option sends no header", func(t *testing.T) {
-		doer := &fakeDoer{resp: jsonResponse(http.StatusOK, `{"handlingTags": []}`)} //nolint:bodyclose
-		client := productclassification.NewClient("http://inventory-storage.local", doer)
-		if _, err := client.GetClassification(context.Background(), "sku-1"); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if got := doer.req.Header.Get("Authorization"); got != "" {
-			t.Fatalf("want no Authorization header, got %q", got)
-		}
-	})
-}
