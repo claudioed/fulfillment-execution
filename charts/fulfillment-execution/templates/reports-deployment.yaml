@@ -56,6 +56,7 @@ spec:
             - name: ENVIRONMENT
               value: {{ .Values.environment | quote }}
             {{- end }}
+            {{- include "fulfillment-execution.authEnv" . | nindent 12 }}
           livenessProbe:
             httpGet:
               path: /healthz

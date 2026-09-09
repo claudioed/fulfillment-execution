@@ -76,3 +76,40 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-mcp-keys" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 {{- end }}
+
+{{- define "fulfillment-execution.authSecretName" -}}
+{{- if .Values.auth.existingSecret }}
+{{- .Values.auth.existingSecret }}
+{{- else }}
+{{- printf "%s-auth" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+{{- end }}
+
+{{- /*
+authEnv renders the REST-identity env entries (ADR-0021): AUTH_MODE from the
+ConfigMap plus API_READ_KEY / API_READWRITE_KEY from the auth Secret. Each
+secret ref is emitted only when that key is configured (or an existingSecret
+is named, in which case both are assumed present), so a pod never references
+a Secret data key that was not rendered.
+*/ -}}
+{{- define "fulfillment-execution.authEnv" -}}
+- name: AUTH_MODE
+  valueFrom:
+    configMapKeyRef:
+      name: {{ include "fulfillment-execution.fullname" . }}
+      key: AUTH_MODE
+{{- if or .Values.auth.readKey .Values.auth.existingSecret }}
+- name: API_READ_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "fulfillment-execution.authSecretName" . }}
+      key: API_READ_KEY
+{{- end }}
+{{- if or .Values.auth.readWriteKey .Values.auth.existingSecret }}
+- name: API_READWRITE_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "fulfillment-execution.authSecretName" . }}
+      key: API_READWRITE_KEY
+{{- end }}
+{{- end }}

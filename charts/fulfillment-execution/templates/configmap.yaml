@@ -8,6 +8,8 @@ data:
   HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
   EVENT_PUBLISHER: {{ .Values.config.eventPublisher | quote }}
   KAFKA_BROKERS: {{ .Values.kafka.brokers | quote }}
+  # REST identity mode (ADR-0021): enforce | log | off.
+  AUTH_MODE: {{ .Values.auth.mode | quote }}
   {{- if .Values.otel.enabled }}
   OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.otel.endpoint | quote }}
   OTEL_SERVICE_NAME: {{ .Values.otel.serviceName | quote }}

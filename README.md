@@ -165,7 +165,10 @@ Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 | `ANALYTICS_MIGRATIONS_PATH` | `migrations/analytics` | Analytical golang-migrate migrations the projector runs on start |
 | `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
 | `MCP_ADDR` | `:8090` | `cmd/mcp` listen address — MCP Streamable HTTP at `/` and `/mcp`, unauthenticated `GET /healthz` |
-| `MCP_READ_KEY` / `MCP_READWRITE_KEY` | (unset) | `cmd/mcp` static bearer keys granting the read / read-write scope (ADR-0008). Neither set: every request is rejected |
+| `AUTH_MODE` | `enforce` if any key is set, else `off` | REST identity mode for `cmd/execution` and `cmd/fulfillment-reports` (ADR-0021): `enforce` rejects (401/403 problem details), `log` lets everything through but logs `auth: would-reject`, `off` disables the middleware. Falling back to `off` logs a WARN |
+| `API_READ_KEY` / `API_READWRITE_KEY` | (unset) | Static bearer keys granting the `read` (GET/HEAD/OPTIONS, all `/reports/*`) / `read-write` (every other method) scope on the REST surface. `GET /healthz` never needs one. Shared with `cmd/mcp`, which reads these first |
+| `MCP_READ_KEY` / `MCP_READWRITE_KEY` | (unset) | Fallbacks for `API_READ_KEY` / `API_READWRITE_KEY` (ADR-0008) — read by every binary when the `API_*` variable is unset. `cmd/mcp` with neither pair set rejects every request |
+| `INVENTORY_STORAGE_API_KEY` | (unset) | Bearer token the `PRODUCT_CLASSIFICATION_MODE=http` client sends to inventory-storage (its read key). Unset: no `Authorization` header |
 | `REPORTS_BASE_URL` | (unset) | `cmd/mcp` only: base URL of `cmd/fulfillment-reports`; when set, registers the `get_fulfillment_throughput_report` tool |
 | `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTel Collector's OTLP/gRPC address (see [Observability](#observability)) |
@@ -286,6 +289,17 @@ go test ./... -run TestFeatures -v
 CI runs the same command in the `bdd` job.
 
 ## API
+
+Every endpoint except `GET /healthz` requires a static bearer key
+(`Authorization: Bearer <key>`; ADR-0021 adopting warehouse-ops-agent ADR
+0005). `GET`/`HEAD`/`OPTIONS` need the `read` scope (`API_READ_KEY`),
+every other method the `read-write` scope (`API_READWRITE_KEY`); the
+`/reports/*` endpoints of `cmd/fulfillment-reports` need `read`. A missing
+or invalid key is a `401` (with `WWW-Authenticate: Bearer`), an under-scoped
+one a `403`, both as problem details below. With no key configured the
+binaries run with auth `off` and log a WARN, so the examples in this section
+work unchanged locally; set `AUTH_MODE=log` to observe would-be rejections
+before enforcing.
 
 All endpoints accept/return JSON. Every error response uses
 [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) Problem Details
