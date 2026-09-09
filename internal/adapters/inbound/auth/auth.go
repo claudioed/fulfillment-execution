@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"unicode"
 )
 
 // Scope is a coarse authorization class carried by an API key.
@@ -182,7 +183,7 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 		switch {
 		case !ok:
 			if m.Mode == ModeLog {
-				logger.WarnContext(r.Context(), "auth: would-reject", "reason", "unauthenticated", "method", r.Method, "path", r.URL.Path)
+				logger.WarnContext(r.Context(), "auth: would-reject", "reason", "unauthenticated", "method", sanitizeForLog(r.Method), "path", sanitizeForLog(r.URL.Path))
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -191,7 +192,7 @@ func (m Middleware) Handler(next http.Handler) http.Handler {
 			return
 		case !Allows(granted, need):
 			if m.Mode == ModeLog {
-				logger.WarnContext(r.Context(), "auth: would-reject", "reason", "insufficient-scope", "granted", string(granted), "required", string(need), "method", r.Method, "path", r.URL.Path)
+				logger.WarnContext(r.Context(), "auth: would-reject", "reason", "insufficient-scope", "granted", string(granted), "required", string(need), "method", sanitizeForLog(r.Method), "path", sanitizeForLog(r.URL.Path))
 				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), scopeKey{}, granted)))
 				return
 			}
@@ -232,4 +233,24 @@ func KeysFromEnv(getenv func(string) string) map[string]Scope {
 		keys[k] = ScopeReadWrite
 	}
 	return keys
+}
+
+// sanitizeForLog strips control characters (CR/LF above all) and bounds the
+// length of request-derived strings before they reach a log line, so a
+// crafted path or method cannot forge or split log entries (CodeQL
+// go/log-injection). The JSON handler would escape these anyway; this keeps
+// the guarantee independent of the handler in use.
+func sanitizeForLog(s string) string {
+	const max = 256
+	var b strings.Builder
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+		if b.Len() >= max {
+			break
+		}
+	}
+	return b.String()
 }

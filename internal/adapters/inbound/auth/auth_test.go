@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -136,3 +137,15 @@ func TestBearerToken_Malformed(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+func TestSanitizeForLog(t *testing.T) {
+	if got := sanitizeForLog("/things\r\nlevel=INFO msg=forged"); got != "/thingslevel=INFO msg=forged" {
+		t.Fatalf("control chars must be stripped, got %q", got)
+	}
+	if got := sanitizeForLog(strings.Repeat("a", 1000)); len(got) != 256 {
+		t.Fatalf("must be bounded to 256, got %d", len(got))
+	}
+	if got := sanitizeForLog("/ok/path"); got != "/ok/path" {
+		t.Fatalf("plain input must pass through, got %q", got)
+	}
+}
