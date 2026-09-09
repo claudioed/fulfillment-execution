@@ -43,14 +43,21 @@ type Client struct {
 	doer    HTTPDoer
 }
 
+// Option customises a Client.
+type Option func(*Client)
+
 // NewClient builds a Client against baseURL (e.g. from
 // INVENTORY_STORAGE_BASE_URL). A nil doer defaults to an *http.Client with
 // DefaultTimeout.
-func NewClient(baseURL string, doer HTTPDoer) *Client {
+func NewClient(baseURL string, doer HTTPDoer, opts ...Option) *Client {
 	if doer == nil {
 		doer = &http.Client{Timeout: DefaultTimeout}
 	}
-	return &Client{baseURL: strings.TrimRight(baseURL, "/"), doer: doer}
+	c := &Client{baseURL: strings.TrimRight(baseURL, "/"), doer: doer}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
 }
 
 // classificationResponse mirrors inventory-storage's

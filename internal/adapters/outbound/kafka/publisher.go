@@ -75,23 +75,34 @@ type Publisher struct {
 
 // NewPublisher constructs a Publisher writing to Topic on brokers.
 func NewPublisher(brokers []string, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string) *Publisher {
-	return &Publisher{
-		Writer: &kafkago.Writer{
-			Addr:                   kafkago.TCP(brokers...),
-			Topic:                  Topic,
-			Balancer:               &kafkago.LeastBytes{},
-			AllowAutoTopicCreation: true,
-		},
-		Tasks:    tasks,
-		Stations: stations,
-		NewId:    newId,
-	}
+	return NewPublisherWithWriter(&kafkago.Writer{
+		Addr:                   kafkago.TCP(brokers...),
+		Topic:                  Topic,
+		Balancer:               &kafkago.LeastBytes{},
+		AllowAutoTopicCreation: true,
+	}, tasks, stations, newId)
 }
 
-// Publish forwards every TaskCompleted event in evts onto Kafka, enriched
-// with the completed Task's OrderRef, the completing associate's identity,
-// and the task's duration.
-func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) error {
+// NewPublisherWithWriter constructs a Publisher over an explicit Writer.
+// When used only as an Encoder (the outbox configuration, ADR 0020) the
+// writer may be nil — Encode never touches it.
+func NewPublisherWithWriter(w Writer, tasks ports.TaskRepo, stations ports.StationRepo, newId func() string) *Publisher {
+	return &Publisher{Writer: w, Tasks: tasks, Stations: stations, NewId: newId}
+}
+
+// Encode builds the wire form of every TaskCompleted event in evts — the
+// envelope enriched with the completed Task's OrderRef, the completing
+// associate's identity and the task's duration — WITHOUT sending it.
+// Other event types are not part of the integration contract and yield
+// nothing. The repo lookups happen here, so when Encode runs inside a use
+// case's transaction (the outbox path) they see the just-saved rows.
+//
+// The W3C trace context of whatever span is active on ctx is injected
+// into each message's headers, so the consumer's span becomes a child of
+// the caller's — the publish span when called through Publish, the use
+// case's span when called by the outbox publisher.
+func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]Encoded, error) {
+	var out []Encoded
 	for _, e := range evts {
 		tc, ok := e.(shared.TaskCompleted)
 		if !ok {
@@ -100,7 +111,7 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 
 		t, err := p.Tasks.FindById(ctx, tc.TaskId)
 		if err != nil {
-			return fmt.Errorf("kafka: lookup task %s for enrichment: %w", tc.TaskId, err)
+			return nil, fmt.Errorf("kafka: lookup task %s for enrichment: %w", tc.TaskId, err)
 		}
 		var workUnitId string
 		var durationSeconds int64
@@ -113,7 +124,7 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 
 		associateId, err := p.associateId(ctx, tc.StationId)
 		if err != nil {
-			return fmt.Errorf("kafka: lookup station %s for enrichment: %w", tc.StationId, err)
+			return nil, fmt.Errorf("kafka: lookup station %s for enrichment: %w", tc.StationId, err)
 		}
 
 		env := Envelope{
@@ -131,10 +142,57 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 		}
 		payload, err := json.Marshal(env)
 		if err != nil {
-			return fmt.Errorf("kafka: marshal envelope: %w", err)
+			return nil, fmt.Errorf("kafka: marshal envelope: %w", err)
 		}
-		if err := p.write(ctx, tc, payload); err != nil {
+		enc := Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(tc.TaskId), Value: payload}
+		observability.InjectKafkaTrace(ctx, &enc.Headers)
+		out = append(out, enc)
+	}
+	return out, nil
+}
+
+// Publish forwards every TaskCompleted event in evts onto Kafka, enriched
+// with the completed Task's OrderRef, the completing associate's identity,
+// and the task's duration. Each message is encoded and written inside its
+// own "kafka.publish <topic>" producer span.
+func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) error {
+	for _, e := range evts {
+		if _, ok := e.(shared.TaskCompleted); !ok {
+			continue
+		}
+		if err := p.publishOne(ctx, e); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// publishOne encodes and writes one event inside a producer span, so the
+// injected traceparent names the publish span itself (the consumer hangs
+// off the publish, not its caller) and a broker error is recorded on it.
+func (p *Publisher) publishOne(ctx context.Context, e shared.DomainEvent) error {
+	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
+		"kafka.publish "+Topic,
+		trace.WithSpanKind(trace.SpanKindProducer),
+		trace.WithAttributes(
+			semconv.MessagingSystemKafka,
+			semconv.MessagingDestinationName(Topic),
+			semconv.MessagingOperationName("publish"),
+		),
+	)
+	defer span.End()
+
+	encoded, err := p.Encode(ctx, e)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return err
+	}
+	for _, enc := range encoded {
+		if err := p.Writer.WriteMessages(ctx, enc.message()); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			return fmt.Errorf("kafka: publish TaskCompleted: %w", err)
 		}
 	}
 	return nil
@@ -157,33 +215,6 @@ func (p *Publisher) associateId(ctx context.Context, stationId shared.StationId)
 		return "", nil
 	}
 	return string(*s.Occupant()), nil
-}
-
-// write publishes one already-marshalled envelope inside a
-// "kafka.publish <topic>" producer span, injecting that span's context into
-// the message headers so the consuming service's span becomes a child of
-// this one.
-func (p *Publisher) write(ctx context.Context, tc shared.TaskCompleted, payload []byte) error {
-	ctx, span := otel.Tracer(observability.InstrumentationName).Start(ctx,
-		"kafka.publish "+Topic,
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(
-			semconv.MessagingSystemKafka,
-			semconv.MessagingDestinationName(Topic),
-			semconv.MessagingOperationName("publish"),
-		),
-	)
-	defer span.End()
-
-	msg := kafkago.Message{Key: []byte(tc.TaskId), Value: payload}
-	observability.InjectKafkaTrace(ctx, &msg.Headers)
-
-	if err := p.Writer.WriteMessages(ctx, msg); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return fmt.Errorf("kafka: publish TaskCompleted: %w", err)
-	}
-	return nil
 }
 
 // Close releases the underlying Kafka writer.

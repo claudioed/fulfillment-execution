@@ -43,12 +43,6 @@ servers:
   - url: http://localhost:8080
     description: Local development (in-memory adapters unless DATABASE_URL is set)
 
-# This service has no authentication/authorization layer today (see CLAUDE.md
-# / router.go — no auth middleware is wired in). Declared explicitly as no
-# security requirements, rather than left undefined, so tooling doesn't
-# flag it as an oversight.
-security: []
-
 tags:
   - name: Tasks
     description: >

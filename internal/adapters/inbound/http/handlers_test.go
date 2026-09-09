@@ -17,7 +17,14 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 )
 
+// newTestServer builds the router with no identity layer: this service's
+// REST and MCP surfaces are unauthenticated.
 func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *memory.PackageRepo, *memory.FixedClock) {
+	h, tasks, stations, packages, clock := newTestHandlers()
+	return http.NewRouter(h, nil), tasks, stations, packages, clock
+}
+
+func newTestHandlers() (*http.Handlers, *memory.TaskRepo, *memory.StationRepo, *memory.PackageRepo, *memory.FixedClock) {
 	tasks := memory.NewTaskRepo()
 	stations := memory.NewStationRepo()
 	packages := memory.NewPackageRepo()
@@ -55,7 +62,7 @@ func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *m
 		},
 		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stations},
 	}
-	return http.NewRouter(h, nil), tasks, stations, packages, clock
+	return h, tasks, stations, packages, clock
 }
 
 func doJSON(t *testing.T, srv stdhttp.Handler, method, path string, body any) *httptest.ResponseRecorder {

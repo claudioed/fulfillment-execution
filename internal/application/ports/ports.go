@@ -80,6 +80,23 @@ type EventPublisher interface {
 	Publish(ctx context.Context, events ...shared.DomainEvent) error
 }
 
+// UnitOfWork brackets a use case's state change and the domain events it
+// raises so both commit or neither does (ADR 0020, transactional outbox).
+//
+// Execute runs fn inside one atomic scope. Every Repo.Save and
+// EventPublisher.Publish made with the ctx handed to fn is bound to that
+// same scope: if fn returns an error the scope is rolled back and nothing
+// — neither the aggregate row nor the outbox rows — is visible afterwards.
+// A nested Execute (fn calling another use case that itself uses the same
+// UnitOfWork) joins the outer scope rather than opening a second one.
+//
+// Adapters that have no transactional backing (the in-memory repos, the
+// log publisher) simply leave the use case's UnitOfWork field nil; the use
+// cases then run Save and Publish back to back exactly as before.
+type UnitOfWork interface {
+	Execute(ctx context.Context, fn func(ctx context.Context) error) error
+}
+
 // Metrics records the business events of the task lifecycle for the
 // observability pipeline. It is a port, not a direct OTel dependency, so the
 // application layer stays free of vendor telemetry types; the adapter behind

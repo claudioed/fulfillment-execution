@@ -15,11 +15,20 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
+// RouterOption customises NewRouter / NewReportsRouter.
+type RouterOption func(*routerConfig)
+
+type routerConfig struct{}
+
 // NewRouter builds the chi router for every Fulfillment Execution endpoint.
 // A nil logger falls back to slog.Default() rather than panicking.
-func NewRouter(h *Handlers, logger *slog.Logger) *chi.Mux {
+func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	var cfg routerConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
 
 	r := chi.NewRouter()
@@ -40,6 +49,7 @@ func NewRouter(h *Handlers, logger *slog.Logger) *chi.Mux {
 	r.Use(corsMiddleware())
 
 	r.Get("/healthz", h.GetHealthz)
+
 	r.Post("/stations", h.PostRegisterStation)
 	r.Post("/tasks", h.PostTask)
 	r.Get("/tasks", h.GetTasksHandler)
@@ -103,9 +113,8 @@ func sanitizeForLog(s string) string {
 
 // corsMiddleware allows the warehouse-console browser SPA (and this
 // service's own future MFE remote dev origin) to call this API directly
-// from the browser. Static-bearer-key auth, not cookies, so credentials
-// are never needed here. CORS_ALLOWED_ORIGINS overrides the local-dev
-// default (comma-separated) for staging/prod deployments.
+// from the browser. CORS_ALLOWED_ORIGINS overrides the local-dev default
+// (comma-separated) for staging/prod deployments.
 func corsMiddleware() func(http.Handler) http.Handler {
 	origins := []string{"http://localhost:5173", "http://localhost:5184"}
 	if v := os.Getenv("CORS_ALLOWED_ORIGINS"); v != "" {

@@ -137,9 +137,13 @@ func writeReportInternal(w http.ResponseWriter, r *http.Request, err error) {
 
 // NewReportsRouter builds the chi router for the fulfillment-reports reader
 // service. A nil logger falls back to slog.Default().
-func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger) *chi.Mux {
+func NewReportsRouter(h *ReportsHandlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	var cfg routerConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
 
 	r := chi.NewRouter()

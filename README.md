@@ -122,6 +122,33 @@ curl "localhost:8092/reports/throughput/freshness"
 The projector is the **only** writer of the analytical DB; the reports binary
 connects read-only. The OLTP `cmd/execution` never opens the analytical DB.
 
+### Running the MCP server in Kubernetes
+
+`cmd/mcp` (the Model Context Protocol inbound adapter, [ADR-0008](docs/docs/adr/0008-mcp-inbound-adapter.md))
+is built into the same image as `/app/mcp` and deployed by the Helm chart as a
+separate Deployment + ClusterIP Service `<release>-mcp` on port **8090** when
+`mcp.enabled=true`. It runs the same read use cases over the same OLTP
+database as the main deployment (it reuses `database.url` /
+`database.existingSecret`), speaks MCP Streamable HTTP at both `/` and `/mcp`,
+and `GET /healthz` unauthenticated for the liveness/readiness probes. The
+fleet's REST identity layer was removed (see the ADR below), so all MCP
+tool calls are unauthenticated. When `analytics.enabled=true` the pod also
+gets `REPORTS_BASE_URL` pointed at the chart's reports Service so the
+`get_fulfillment_throughput_report` tool is registered (override with
+`mcp.reportsBaseUrl`). Locally:
+
+```sh
+go run ./cmd/mcp        # :8090 (MCP_ADDR)
+curl localhost:8090/healthz                   # {"status":"ok"} — no key needed
+curl -X POST localhost:8090/mcp \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+In the `warehouse-infra` kind cluster the chart is enabled and keyed from
+Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
+`http://fulfillment-execution-mcp.warehouse-systems.svc.cluster.local:8090/mcp`.
+
 ### Configuration
 
 | Env var        | Default | Purpose                          |
@@ -130,10 +157,13 @@ connects read-only. The OLTP `cmd/execution` never opens the analytical DB.
 | `DATABASE_URL` | (unset) | Postgres DSN; unset selects memory adapters |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated Kafka broker list, used by both the `WorkReleased` consumer and the `TaskCompleted` publisher |
 | `PATH_CATALOGUE_FILE` | `/etc/fulfillment-execution/process-paths.yaml` | Path to the declared process-path catalogue YAML (see `warehouse-infra`'s `config/process-paths/sortable-fc.yaml`). Loaded once at startup; a missing or invalid file is a fatal boot-time error — see [ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md) |
-| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` AND fans every domain event to `warehouse.fulfillment.analytics` (feeds the report) |
+| `EVENT_PUBLISHER` | `log` | `log` publishes domain events to stdout only; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` AND fans every domain event to `warehouse.fulfillment.analytics` (feeds the report). When `DATABASE_URL` is also set, both topics are fed through the **transactional outbox** (`outbox_events`, committed in the use case's own transaction and drained by an in-process relay — see [ADR-0020](docs/docs/adr/0020-transactional-outbox.md)); without Postgres, events go straight to the broker |
+| `OUTBOX_RELAY_INTERVAL` | `1s` | How long the outbox relay sleeps between passes when it found nothing to publish (Go duration, e.g. `500ms`). Only used with `EVENT_PUBLISHER=kafka` and `DATABASE_URL` set |
 | `ANALYTICS_DATABASE_URL` | (unset) | Analytical DB DSN, read by `cmd/fulfillment-projector` (read-write) and `cmd/fulfillment-reports` (read-only role). MUST be a different database from `DATABASE_URL` |
 | `ANALYTICS_MIGRATIONS_PATH` | `migrations/analytics` | Analytical golang-migrate migrations the projector runs on start |
 | `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
+| `MCP_ADDR` | `:8090` | `cmd/mcp` listen address — MCP Streamable HTTP at `/` and `/mcp`, unauthenticated `GET /healthz` |
+| `REPORTS_BASE_URL` | (unset) | `cmd/mcp` only: base URL of `cmd/fulfillment-reports`; when set, registers the `get_fulfillment_throughput_report` tool |
 | `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTel Collector's OTLP/gRPC address (see [Observability](#observability)) |
 | `OTEL_SERVICE_NAME` | `fulfillment-execution` | `service.name` resource attribute |
@@ -254,7 +284,8 @@ CI runs the same command in the `bdd` job.
 
 ## API
 
-All endpoints accept/return JSON. Every error response uses
+All endpoints are unauthenticated (the fleet's REST identity layer was
+removed — see the ADR below). All endpoints accept/return JSON. Every error response uses
 [RFC 7807](https://www.rfc-editor.org/rfc/rfc7807) Problem Details
 (`Content-Type: application/problem+json`) instead of a bespoke shape:
 

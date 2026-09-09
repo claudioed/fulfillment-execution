@@ -17,25 +17,8 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 )
 
-const readKey = "test-read-key"
-const writeKey = "test-write-key"
-
-// bearerTransport adds a fixed Authorization header to every request, so the
-// in-process MCP client authenticates like a real one.
-type bearerTransport struct {
-	token string
-	base  http.RoundTripper
-}
-
-func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if b.token != "" {
-		r.Header.Set("Authorization", "Bearer "+b.token)
-	}
-	return b.base.RoundTrip(r)
-}
-
 // newServer builds a real MCP HTTP server over an in-memory repo seeded with
-// 2x PICK + 1x PACK pending tasks, returns its httptest URL and the read key.
+// 2x PICK + 1x PACK pending tasks, returns its httptest URL.
 func newServer(t *testing.T) string {
 	t.Helper()
 	tasks := memory.NewTaskRepo()
@@ -57,18 +40,17 @@ func newServer(t *testing.T) string {
 		Now:           clock.Now,
 	}
 	server := inboundmcp.NewServer(deps)
-	auth := inboundmcp.NewStaticKeyAuth(map[string]inboundmcp.Scope{readKey: inboundmcp.ScopeRead})
-	httpSrv := httptest.NewServer(inboundmcp.Handler(server, auth))
+	httpSrv := httptest.NewServer(inboundmcp.Handler(server))
 	t.Cleanup(httpSrv.Close)
 	return httpSrv.URL
 }
 
-func connect(t *testing.T, url, token string) *sdk.ClientSession {
+func connect(t *testing.T, url string) *sdk.ClientSession {
 	t.Helper()
 	client := sdk.NewClient(&sdk.Implementation{Name: "test-client", Version: "0.0.1"}, nil)
 	transport := &sdk.StreamableClientTransport{
 		Endpoint:   url,
-		HTTPClient: &http.Client{Transport: bearerTransport{token: token, base: http.DefaultTransport}},
+		HTTPClient: &http.Client{},
 	}
 	session, err := client.Connect(context.Background(), transport, nil)
 	if err != nil {
@@ -78,24 +60,9 @@ func connect(t *testing.T, url, token string) *sdk.ClientSession {
 	return session
 }
 
-func TestServer_UnauthenticatedIsRejected(t *testing.T) {
-	url := newServer(t)
-	resp, err := http.Post(url, "application/json", nil)
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want 401", resp.StatusCode)
-	}
-	if got := resp.Header.Get("WWW-Authenticate"); got == "" {
-		t.Fatal("missing WWW-Authenticate challenge on 401")
-	}
-}
-
 func TestServer_ToolsListAndCall(t *testing.T) {
 	url := newServer(t)
-	session := connect(t, url, readKey)
+	session := connect(t, url)
 	ctx := context.Background()
 
 	tools, err := session.ListTools(ctx, nil)
@@ -135,7 +102,7 @@ func TestServer_ToolsListAndCall(t *testing.T) {
 
 func TestServer_CallToolRejectsUnknownProcessPath(t *testing.T) {
 	url := newServer(t)
-	session := connect(t, url, readKey)
+	session := connect(t, url)
 	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "get_queue_status",
 		Arguments: map[string]any{"processPath": "FLYING"},
@@ -150,7 +117,7 @@ func TestServer_CallToolRejectsUnknownProcessPath(t *testing.T) {
 
 func TestServer_ResourceRead(t *testing.T) {
 	url := newServer(t)
-	session := connect(t, url, readKey)
+	session := connect(t, url)
 	res, err := session.ReadResource(context.Background(), &sdk.ReadResourceParams{
 		URI: "queue://fulfillment/PICK/status",
 	})
@@ -164,7 +131,7 @@ func TestServer_ResourceRead(t *testing.T) {
 
 func TestServer_PromptGet(t *testing.T) {
 	url := newServer(t)
-	session := connect(t, url, readKey)
+	session := connect(t, url)
 	res, err := session.GetPrompt(context.Background(), &sdk.GetPromptParams{Name: "triage_backlog"})
 	if err != nil {
 		t.Fatalf("get prompt: %v", err)
@@ -174,9 +141,8 @@ func TestServer_PromptGet(t *testing.T) {
 	}
 }
 
-// newWriteServer builds a server with both a read and a read-write key, and a
-// single PICK task already claimed by station s1 (ready to complete). Returns
-// the URL and the claimed task's id.
+// newWriteServer builds a server with a single PICK task already claimed by
+// station s1 (ready to complete). Returns the URL and the claimed task's id.
 func newWriteServer(t *testing.T) (string, string) {
 	t.Helper()
 	tasks := memory.NewTaskRepo()
@@ -209,33 +175,14 @@ func newWriteServer(t *testing.T) (string, string) {
 		Now:           clock.Now,
 	}
 	server := inboundmcp.NewServer(deps)
-	auth := inboundmcp.NewStaticKeyAuth(map[string]inboundmcp.Scope{
-		readKey:  inboundmcp.ScopeRead,
-		writeKey: inboundmcp.ScopeReadWrite,
-	})
-	httpSrv := httptest.NewServer(inboundmcp.Handler(server, auth))
+	httpSrv := httptest.NewServer(inboundmcp.Handler(server))
 	t.Cleanup(httpSrv.Close)
 	return httpSrv.URL, string(claimed.Id())
 }
 
-func TestServer_CompleteTaskDeniedForReadOnlyKey(t *testing.T) {
+func TestServer_CompleteTaskSucceeds(t *testing.T) {
 	url, taskId := newWriteServer(t)
-	session := connect(t, url, readKey) // read-only key
-	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
-		Name:      "complete_task",
-		Arguments: map[string]any{"taskId": taskId, "stationId": "s1"},
-	})
-	if err != nil {
-		t.Fatalf("call tool transport error: %v", err)
-	}
-	if !res.IsError {
-		t.Fatal("complete_task with a read-only key must be denied (scope gate)")
-	}
-}
-
-func TestServer_CompleteTaskSucceedsForWriteKey(t *testing.T) {
-	url, taskId := newWriteServer(t)
-	session := connect(t, url, writeKey) // read-write key
+	session := connect(t, url)
 	res, err := session.CallTool(context.Background(), &sdk.CallToolParams{
 		Name:      "complete_task",
 		Arguments: map[string]any{"taskId": taskId, "stationId": "s1"},
@@ -244,7 +191,7 @@ func TestServer_CompleteTaskSucceedsForWriteKey(t *testing.T) {
 		t.Fatalf("call tool: %v", err)
 	}
 	if res.IsError {
-		t.Fatalf("complete_task with write key returned error: %+v", res.Content)
+		t.Fatalf("complete_task returned error: %+v", res.Content)
 	}
 	completed, ok := res.StructuredContent.(map[string]any)["completed"]
 	if !ok || completed != true {

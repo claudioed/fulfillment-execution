@@ -28,6 +28,9 @@ type SealPackage struct {
 	Clock                ports.Clock
 	NewId                func() shared.PackageId
 	ClassificationLookup ports.ProductClassificationLookup
+	// UnitOfWork brackets Save + Publish atomically (ADR 0020); nil runs
+	// them back to back.
+	UnitOfWork ports.UnitOfWork
 }
 
 // Execute validates that stationId holds the active claim on taskId (which
@@ -71,10 +74,13 @@ func (uc *SealPackage) Execute(ctx context.Context, taskId shared.TaskId, statio
 	if err := p.Seal(); err != nil {
 		return nil, err
 	}
-	if err := uc.Packages.Save(ctx, p); err != nil {
-		return nil, err
-	}
-	if err := uc.Publisher.Publish(ctx, shared.NewPackageSealed(p.Id(), uc.Clock.Now())); err != nil {
+	err = atomically(ctx, uc.UnitOfWork, func(ctx context.Context) error {
+		if err := uc.Packages.Save(ctx, p); err != nil {
+			return err
+		}
+		return uc.Publisher.Publish(ctx, shared.NewPackageSealed(p.Id(), uc.Clock.Now()))
+	})
+	if err != nil {
 		return nil, err
 	}
 	return p, nil
