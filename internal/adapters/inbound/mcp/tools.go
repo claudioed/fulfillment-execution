@@ -177,37 +177,35 @@ func (d Deps) completeTask(ctx context.Context, in completeTaskInput) (completeT
 // --- registration -------------------------------------------------------------
 
 // registerTools adds every tool to the server, each wrapped so its handler
-// runs inside an OTel span named "mcp.tool <name>" and is gated by the
-// session's scope. Read tools require ScopeRead; write tools require
-// ScopeReadWrite.
-func (d Deps) registerTools(server *mcp.Server, scopeOf func(context.Context) Scope) {
+// runs inside an OTel span named "mcp.tool <name>".
+func (d Deps) registerTools(server *mcp.Server) {
 	readOnly := true
 
-	addTool(server, scopeOf, ScopeRead, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "get_queue_status",
 		Description: "Return the number of Pending tasks in a process-path queue (PICK, PACK, or SLAM).",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.getQueueStatus)
 
-	addTool(server, scopeOf, ScopeRead, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "find_claimable_work",
 		Description: "Return the highest-priority (earliest-CPT) task a station could claim now in a given process path, plus how many candidates exist.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.findClaimableWork)
 
-	addTool(server, scopeOf, ScopeRead, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "diagnose_stuck_tasks",
 		Description: "List claimed tasks whose lease has expired (or expires within a given window), each with the reason it is flagged.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: readOnly},
 	}, d.diagnoseStuckTasks)
 
-	// Write tool: completes a claimed task. Requires the read-write scope and
-	// is annotated destructive (non-read-only, non-idempotent) so a host can
-	// see it changes state before letting a model call it. The domain
-	// invariants (at-most-once, ownership) bound the risk of a mistaken call.
+	// Write tool: completes a claimed task. Annotated destructive
+	// (non-read-only, non-idempotent) so a host can see it changes state
+	// before letting a model call it. The domain invariants (at-most-once,
+	// ownership) bound the risk of a mistaken call.
 	destructive := true
 	notIdempotent := false
-	addTool(server, scopeOf, ScopeReadWrite, &mcp.Tool{
+	addTool(server, &mcp.Tool{
 		Name:        "complete_task",
 		Description: "Complete a claimed task on behalf of the station that holds its active claim. Rejected if the task is not found, not claimed, already completed, or the station does not own the claim.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: notIdempotent},
@@ -215,17 +213,14 @@ func (d Deps) registerTools(server *mcp.Server, scopeOf func(context.Context) Sc
 
 	// Curated read-only data-product tool, registered only when the reports
 	// client is configured.
-	d.registerReportTool(server, scopeOf)
+	d.registerReportTool(server)
 }
 
-// addTool registers one scope-gated tool. It centralises the cross-cutting
-// concerns every tool shares: a span per call, scope enforcement against the
-// tool's required minimum scope, and mapping a handler error onto the span
-// before returning it.
+// addTool registers one tool. It centralises the cross-cutting concern
+// every tool shares: a span per call, and mapping a handler error onto
+// the span before returning it.
 func addTool[In, Out any](
 	server *mcp.Server,
-	scopeOf func(context.Context) Scope,
-	required Scope,
 	tool *mcp.Tool,
 	handle func(context.Context, In) (Out, error),
 ) {
@@ -234,16 +229,9 @@ func addTool[In, Out any](
 		ctx, span := otel.Tracer(tracerName).Start(ctx, "mcp.tool "+tool.Name,
 			trace.WithAttributes(
 				attribute.String("mcp.tool.name", tool.Name),
-				attribute.String("mcp.tool.required_scope", string(required)),
 			),
 		)
 		defer span.End()
-
-		if !scopeAllows(scopeOf(ctx), required) {
-			err := fmt.Errorf("tool %q requires %s scope", tool.Name, required)
-			span.SetStatus(codes.Error, "unauthorized")
-			return nil, zero, err
-		}
 
 		out, err := handle(ctx, in)
 		if err != nil {

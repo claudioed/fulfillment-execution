@@ -50,18 +50,6 @@ spec:
                   name: {{ include "fulfillment-execution.databaseSecretName" . }}
                   key: {{ .Values.database.existingSecretKey }}
             {{- end }}
-            # Static bearer keys (ADR-0008). Missing keys fail CLOSED: the
-            # server starts but rejects every request.
-            - name: MCP_READ_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "fulfillment-execution.mcpSecretName" . }}
-                  key: MCP_READ_KEY
-            - name: MCP_READWRITE_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "fulfillment-execution.mcpSecretName" . }}
-                  key: MCP_READWRITE_KEY
             # The throughput report tool talks to the reports REST service
             # (never the analytical DB); it is only registered when the
             # analytics part is enabled, or an explicit URL is given.

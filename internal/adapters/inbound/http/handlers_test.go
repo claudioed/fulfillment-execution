@@ -17,10 +17,8 @@ import (
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 )
 
-// newTestServer builds the router WITHOUT auth options, i.e. in
-// auth.ModeOff — exactly how a key-less local run behaves. The auth
-// behaviour itself is covered by router_auth_test.go, which uses
-// newTestHandlers directly with http.WithAuth.
+// newTestServer builds the router with no identity layer: this service's
+// REST and MCP surfaces are unauthenticated.
 func newTestServer() (stdhttp.Handler, *memory.TaskRepo, *memory.StationRepo, *memory.PackageRepo, *memory.FixedClock) {
 	h, tasks, stations, packages, clock := newTestHandlers()
 	return http.NewRouter(h, nil), tasks, stations, packages, clock

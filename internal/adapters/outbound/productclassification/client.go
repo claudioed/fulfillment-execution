@@ -39,21 +39,12 @@ type HTTPDoer interface {
 // ports.ProductClassificationLookup, calling inventory-storage's
 // GET /products/{sku}/classification.
 type Client struct {
-	baseURL     string
-	doer        HTTPDoer
-	bearerToken string
+	baseURL string
+	doer    HTTPDoer
 }
 
 // Option customises a Client.
 type Option func(*Client)
-
-// WithBearerToken makes every request carry "Authorization: Bearer <token>"
-// (fleet REST identity, ADR-0021; env INVENTORY_STORAGE_API_KEY). An empty
-// token sends no header, so an unconfigured key is indistinguishable from
-// the pre-auth behaviour.
-func WithBearerToken(token string) Option {
-	return func(c *Client) { c.bearerToken = token }
-}
 
 // NewClient builds a Client against baseURL (e.g. from
 // INVENTORY_STORAGE_BASE_URL). A nil doer defaults to an *http.Client with
@@ -99,9 +90,6 @@ func (c *Client) GetClassification(ctx context.Context, sku string) (ports.Class
 		return ports.ClassificationInfo{}, err
 	}
 	req.Header.Set("Accept", "application/json")
-	if c.bearerToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
-	}
 
 	resp, err := c.doer.Do(req)
 	if err != nil {

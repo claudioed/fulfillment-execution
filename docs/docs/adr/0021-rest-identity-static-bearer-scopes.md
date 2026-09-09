@@ -10,7 +10,9 @@ description: ADR 0021 — fulfillment-execution's adoption record for the fleet-
 
 ## Status
 
-Accepted — implemented in the same change that introduced this record.
+**Superseded by [0022-remove-rest-mcp-auth](0022-remove-rest-mcp-auth.md)**
+(2026-09-09) — the fleet-wide static-bearer auth layer was removed
+entirely. Accepted — implemented in the same change that introduced this record.
 Adoption record; the decision itself is fleet-wide and lives in
 **warehouse-ops-agent ADR 0005** (*Fleet REST identity: static bearer keys
 with read/read-write scopes, no IdP*).

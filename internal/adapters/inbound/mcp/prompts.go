@@ -27,7 +27,7 @@ Escalate to a human when: any queue depth is growing across repeated checks, or 
 Done means: you have reported, per process path, the queue depth, the most urgent claimable task, and any expired/expiring leases — with a one-line reason for each concern. Do not attempt to change state; this backlog triage is read-only.`
 
 // registerPrompts adds the workflow prompts (operational SOPs).
-func (d Deps) registerPrompts(server *mcp.Server, scopeOf func(context.Context) Scope) {
+func (d Deps) registerPrompts(server *mcp.Server) {
 	server.AddPrompt(&mcp.Prompt{
 		Name:        "triage_backlog",
 		Description: "Standard operating procedure for triaging the fulfillment-execution work backlog using the read tools.",

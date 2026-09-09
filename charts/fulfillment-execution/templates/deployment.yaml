@@ -75,15 +75,6 @@ spec:
             - name: PATH_CATALOGUE_FILE
               value: {{ .Values.pathCatalogue.mountPath }}/process-paths.yaml
             {{- end }}
-            {{- include "fulfillment-execution.authEnv" . | nindent 12 }}
-            {{- if or .Values.inventoryStorage.apiKey .Values.auth.existingSecret }}
-            - name: INVENTORY_STORAGE_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "fulfillment-execution.authSecretName" . }}
-                  key: INVENTORY_STORAGE_API_KEY
-                  optional: true
-            {{- end }}
             {{- range .Values.extraEnv }}
             - {{ toYaml . | nindent 14 | trim }}
             {{- end }}
