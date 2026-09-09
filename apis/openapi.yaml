@@ -43,11 +43,15 @@ servers:
   - url: http://localhost:8080
     description: Local development (in-memory adapters unless DATABASE_URL is set)
 
-# This service has no authentication/authorization layer today (see CLAUDE.md
-# / router.go — no auth middleware is wired in). Declared explicitly as no
-# security requirements, rather than left undefined, so tooling doesn't
-# flag it as an oversight.
-security: []
+# Fleet REST identity (ADR-0021, adopting warehouse-ops-agent ADR 0005):
+# every operation requires a static bearer key. GET/HEAD/OPTIONS need the
+# `read` scope, every other method needs `read-write`. A missing or invalid
+# credential is a 401 (with WWW-Authenticate), an under-scoped one a 403,
+# both as RFC 7807 problem details. `GET /healthz` overrides this with an
+# empty security requirement. Runtime AUTH_MODE=enforce|log|off selects
+# whether the server rejects, only logs, or ignores failures.
+security:
+  - bearerAuth: []
 
 tags:
   - name: Tasks
@@ -864,6 +868,7 @@ paths:
       operationId: getHealthz
       tags: [System]
       summary: Liveness check
+      security: []
       description: >
         Returns `200` if the HTTP server process is up and serving. This is
         a liveness probe, not a readiness probe — it does not check
@@ -874,6 +879,16 @@ paths:
           description: The service process is up.
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Static API key (ADR-0021). `API_READ_KEY` grants the `read` scope
+        (safe methods); `API_READWRITE_KEY` grants `read-write` (everything).
+        Failures are RFC 7807 problems: `401` `…/unauthenticated` with a
+        `WWW-Authenticate: Bearer` challenge, `403` `…/insufficient-scope`.
+
   schemas:
     Problem:
       type: object

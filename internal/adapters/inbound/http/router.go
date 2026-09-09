@@ -12,14 +12,60 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/riandyrn/otelchi"
 
+	"github.com/claudioed/fulfillment-execution/internal/adapters/inbound/auth"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
+// ProblemBase is the RFC 7807 problem-type base URL of this service; the
+// auth middleware's 401/403 problem bodies use it so they look exactly like
+// every other problem this adapter emits (ADR-0005).
+const ProblemBase = "https://errors.fulfillment-execution.warehouse-systems.dev/"
+
+// RouterOption customises NewRouter / NewReportsRouter.
+type RouterOption func(*routerConfig)
+
+type routerConfig struct {
+	authn auth.Authenticator
+	mode  auth.Mode
+}
+
+// WithAuth mounts the fleet-standard REST auth middleware (ADR-0021) on every
+// route except /healthz. Without this option the router runs in auth.ModeOff,
+// which is what the handler tests and a key-less local run rely on.
+func WithAuth(authn auth.Authenticator, mode auth.Mode) RouterOption {
+	return func(c *routerConfig) {
+		c.authn = authn
+		c.mode = mode
+	}
+}
+
+// authMiddleware builds the middleware for the configured auth mode. Required
+// overrides the default method-based policy (nil = GET/HEAD/OPTIONS need
+// read, everything else read-write).
+func (c routerConfig) authMiddleware(logger *slog.Logger, required func(*http.Request) auth.Scope) func(http.Handler) http.Handler {
+	if c.authn == nil || c.mode == "" {
+		return auth.Middleware{Mode: auth.ModeOff}.Handler
+	}
+	return auth.Middleware{
+		Authn:       c.authn,
+		Mode:        c.mode,
+		Logger:      logger,
+		ProblemBase: ProblemBase,
+		Required:    required,
+	}.Handler
+}
+
 // NewRouter builds the chi router for every Fulfillment Execution endpoint.
-// A nil logger falls back to slog.Default() rather than panicking.
-func NewRouter(h *Handlers, logger *slog.Logger) *chi.Mux {
+// A nil logger falls back to slog.Default() rather than panicking. GET
+// /healthz is always open; every other route sits behind the auth middleware
+// when WithAuth is supplied.
+func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	var cfg routerConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
 
 	r := chi.NewRouter()
@@ -40,20 +86,27 @@ func NewRouter(h *Handlers, logger *slog.Logger) *chi.Mux {
 	r.Use(corsMiddleware())
 
 	r.Get("/healthz", h.GetHealthz)
-	r.Post("/stations", h.PostRegisterStation)
-	r.Post("/tasks", h.PostTask)
-	r.Get("/tasks", h.GetTasksHandler)
-	r.Post("/stations/{stationId}/claim-next", h.PostClaimNext)
-	r.Post("/stations/{stationId}/check-in", h.PostCheckInStation)
-	r.Post("/stations/{stationId}/check-out", h.PostCheckOutStation)
-	r.Post("/tasks/{id}/renew-lease", h.PostRenewLease)
-	r.Post("/tasks/{id}/complete", h.PostCompleteTask)
-	r.Post("/tasks/{id}/seal-package", h.PostSealPackage)
-	r.Post("/packages/{id}/slam", h.PostRunSlam)
-	r.Get("/queues/{taskType}/depth", h.GetQueueDepthHandler)
-	r.Get("/capacity/{capability}", h.GetInstalledCapacityHandler)
-	r.Post("/tasks/expire-leases", h.PostExpireLeases)
-	r.Post("/rebin/arrivals", h.PostArriveAtRebin)
+
+	// Everything but the probe endpoint is inside the auth group so /healthz
+	// never needs a bearer key (Kubernetes probes, fleet convention).
+	r.Group(func(r chi.Router) {
+		r.Use(cfg.authMiddleware(logger, nil))
+
+		r.Post("/stations", h.PostRegisterStation)
+		r.Post("/tasks", h.PostTask)
+		r.Get("/tasks", h.GetTasksHandler)
+		r.Post("/stations/{stationId}/claim-next", h.PostClaimNext)
+		r.Post("/stations/{stationId}/check-in", h.PostCheckInStation)
+		r.Post("/stations/{stationId}/check-out", h.PostCheckOutStation)
+		r.Post("/tasks/{id}/renew-lease", h.PostRenewLease)
+		r.Post("/tasks/{id}/complete", h.PostCompleteTask)
+		r.Post("/tasks/{id}/seal-package", h.PostSealPackage)
+		r.Post("/packages/{id}/slam", h.PostRunSlam)
+		r.Get("/queues/{taskType}/depth", h.GetQueueDepthHandler)
+		r.Get("/capacity/{capability}", h.GetInstalledCapacityHandler)
+		r.Post("/tasks/expire-leases", h.PostExpireLeases)
+		r.Post("/rebin/arrivals", h.PostArriveAtRebin)
+	})
 
 	return r
 }

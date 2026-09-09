@@ -112,3 +112,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0018](./0018-installed-capacity-read-endpoint.md) | Installed-capacity read endpoint for workforce-management's capacity ceiling | Accepted |
 | [0019](./0019-standard-metrics-convention.md) | Standard metrics convention across the fleet (Tier 1 baseline, Tier 2 naming) | Accepted |
 | [0020](./0020-transactional-outbox.md) | Transactional outbox feeding both the integration and analytics topics from one table, with an in-process relay | Accepted |
+| [0021](./0021-rest-identity-static-bearer-scopes.md) | Adopt the fleet REST identity — static bearer keys with read/read-write scopes, `AUTH_MODE` rollout gate | Accepted |
