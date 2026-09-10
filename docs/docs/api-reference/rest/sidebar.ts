@@ -96,6 +96,12 @@ const sidebar: SidebarsConfig = {
           label: "Check the current occupant out of a station",
           className: "api-method post",
         },
+        {
+          type: "doc",
+          id: "api-reference/rest/get-installed-capacity",
+          label: "Read how many registered stations hold a given capability (read model)",
+          className: "api-method get",
+        },
       ],
     },
     {
@@ -222,6 +228,12 @@ const sidebar: SidebarsConfig = {
           type: "doc",
           id: "api-reference/rest/schemas/queuedepthresponse",
           label: "QueueDepthResponse",
+          className: "schema",
+        },
+        {
+          type: "doc",
+          id: "api-reference/rest/schemas/installedcapacityresponse",
+          label: "InstalledCapacityResponse",
           className: "schema",
         },
         {

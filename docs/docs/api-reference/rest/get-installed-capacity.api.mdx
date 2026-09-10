@@ -1,0 +1,71 @@
+---
+id: get-installed-capacity
+title: "Read how many registered stations hold a given capability (read model)"
+description: "A projection over the Station registry, not a staffing count: returns how many currently-registered stations hold `capability`, regardless of occupancy. This is the raw installed ceiling a process path can ever be staffed up to — workforce-management's CommitShiftPlan calls this endpoint to enforce `plannedHeads` against reality, live, instead of trusting a caller-supplied installed-station count alone (see this repo's ADR-0018). Read-only — never mutates state. An unrecognized `capability` is not an error; it simply has an installed count of `0`, the same 'count over existing rows, not a lookup against a fixed enum' contract `getQueueDepth` already uses."
+sidebar_label: "Read how many registered stations hold a given capability (read model)"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "get api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Read how many registered stations hold a given capability (read model)"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"get"}
+  path={"/capacity/{capability}"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+A projection over the Station registry, not a staffing count: returns how many currently-registered stations hold `capability`, regardless of occupancy. This is the raw installed ceiling a process path can ever be staffed up to — workforce-management's CommitShiftPlan calls this endpoint to enforce `plannedHeads` against reality, live, instead of trusting a caller-supplied installed-station count alone (see this repo's ADR-0018). Read-only — never mutates state. An unrecognized `capability` is not an error; it simply has an installed count of `0`, the same "count over existing rows, not a lookup against a fixed enum" contract `getQueueDepth` already uses.
+
+
+<Heading
+  id={"request"}
+  as={"h2"}
+  className={"openapi-tabs__heading"}
+>
+  <Translate id="theme.openapi.request.title">Request</Translate>
+</Heading>
+
+<ParamsDetails
+  {...require("./get-installed-capacity.ParamsDetails.json")}
+>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./get-installed-capacity.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./get-installed-capacity.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      
