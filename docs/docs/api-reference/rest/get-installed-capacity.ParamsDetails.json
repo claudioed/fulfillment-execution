@@ -1,0 +1,1 @@
+{"parameters":[{"name":"capability","in":"path","required":true,"description":"The capability to count registered stations for (e.g. pick, pack, slam, rebin).","schema":{"type":"string","example":"pick"}}]}
