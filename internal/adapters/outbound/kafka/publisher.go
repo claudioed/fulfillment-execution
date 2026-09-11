@@ -5,10 +5,11 @@
 // domain event itself carries only TaskId/StationId) — the same
 // repo-lookup-enrichment pattern inventory-storage's Kafka publisher uses
 // for ReservationRevoked. It also enriches TaskCompleted with the
-// completing associate's identity and the task's duration, resolved via a
-// StationRepo lookup and the Task's ClaimedAt timestamp respectively (see
-// ADR-0014) — inputs the labor-performance bounded context needs and that
-// this service is the sole owner of.
+// completing associate's identity, the task's duration, and the task's own
+// type (PICK/PACK/SLAM/REBIN), resolved via a StationRepo lookup, the
+// Task's ClaimedAt timestamp, and the already-loaded Task's Type()
+// respectively (see ADR-0014, ADR-0023) — inputs the labor-performance
+// bounded context needs and that this service is the sole owner of.
 package kafka
 
 import (
@@ -44,17 +45,21 @@ type Envelope struct {
 
 // TaskCompletedData is the payload of a published TaskCompleted event,
 // enriched with the completed Task's OrderRef as work_unit_id so Work
-// Planning can call RecordCompletion(WorkUnitId), plus two
-// labor-performance-relevant facts resolved at publish time (ADR-0014):
-// AssociateId (the occupant of the claiming station, if any — empty for a
-// station with no checked-in occupant, e.g. a robot) and DurationSeconds
-// (elapsed time between the task's claim and its completion).
+// Planning can call RecordCompletion(WorkUnitId), plus three
+// labor-performance-relevant facts resolved at publish time (ADR-0014,
+// ADR-0023): AssociateId (the occupant of the claiming station, if any —
+// empty for a station with no checked-in occupant, e.g. a robot),
+// DurationSeconds (elapsed time between the task's claim and its
+// completion), and TaskType (this service's own task.Type — PICK, PACK,
+// SLAM, or REBIN — read directly off the already-loaded Task, no new
+// lookup needed).
 type TaskCompletedData struct {
 	TaskId          string `json:"task_id"`
 	StationId       string `json:"station_id"`
 	WorkUnitId      string `json:"work_unit_id"`
 	AssociateId     string `json:"associate_id,omitempty"`
 	DurationSeconds int64  `json:"duration_seconds,omitempty"`
+	TaskType        string `json:"task_type,omitempty"`
 }
 
 // Writer is the subset of *kafkago.Writer the Publisher needs, so tests can
@@ -115,11 +120,13 @@ func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]E
 		}
 		var workUnitId string
 		var durationSeconds int64
+		var taskType string
 		if t != nil {
 			workUnitId = string(t.OrderRef())
 			if claimedAt := t.ClaimedAt(); claimedAt != nil {
 				durationSeconds = int64(tc.OccurredAt().Sub(*claimedAt).Seconds())
 			}
+			taskType = string(t.Type())
 		}
 
 		associateId, err := p.associateId(ctx, tc.StationId)
@@ -138,6 +145,7 @@ func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]E
 				WorkUnitId:      workUnitId,
 				AssociateId:     associateId,
 				DurationSeconds: durationSeconds,
+				TaskType:        taskType,
 			},
 		}
 		payload, err := json.Marshal(env)
