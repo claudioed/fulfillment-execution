@@ -28,7 +28,8 @@ info:
 
     This document is the full domain-event catalog for the bounded context.
     Of these, only **TaskCompleted** is currently wired to the outbound Kafka
-    adapter (topic `warehouse.fulfillment.events`, enriched with `work_unit_id`)
+    adapter (topic `warehouse.fulfillment.events`, enriched with `work_unit_id`,
+    `associate_id`, `duration_seconds`, and `task_type`)
     per the service's Cross-service Integration contract — see each message's
     description for its current publication status.
   contact:
@@ -172,8 +173,8 @@ components:
         adapter, published on topic `warehouse.fulfillment.events` enriched
         with `work_unit_id` (the completed task's order reference) so Work
         Planning can call RecordCompletion(workUnitId), plus
-        `associate_id` and `duration_seconds` (see ADR-0014) for the
-        labor-performance bounded context.
+        `associate_id`, `duration_seconds`, and `task_type` (see ADR-0014,
+        ADR-0023) for the labor-performance bounded context.
 
 
         Kafka message headers carry W3C trace context, so a consumer that
@@ -213,6 +214,7 @@ components:
               workUnitId: wu-8a1f
               associateId: worker-42
               durationSeconds: 245
+              taskType: PICK
 
     ItemPicked:
       name: ItemPicked
@@ -500,6 +502,23 @@ components:
                     Omitted (zero) when the task's claim start time was not
                     recorded — e.g. a task claimed before this field was
                     introduced.
+                taskType:
+                  type: string
+                  enum:
+                    - PICK
+                    - PACK
+                    - SLAM
+                    - REBIN
+                  description: >
+                    The completed task's own type (carried as task_type on
+                    the wire, see ADR-0023), read directly off the same
+                    Task the workUnitId lookup already resolves — no new
+                    repo dependency. Lets the labor-performance bounded
+                    context bucket utilization/idleness by task type
+                    instead of only across all task types combined. Omitted
+                    only when the completed task cannot be found at publish
+                    time, mirroring associateId/durationSeconds's degrade-
+                    gracefully-never-fail behavior.
 
     ItemPickedEvent:
       allOf:

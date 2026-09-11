@@ -63,7 +63,7 @@ below for what's actually on the wire).
 | `TaskCreated` | `task.TaskCreated` | `taskId` | No |
 | `TaskClaimed` | `task.TaskClaimed` | `taskId`, `stationId` | No |
 | `LeaseExpired` | `task.LeaseExpired` | `taskId` | No |
-| **`TaskCompleted`** | `task.TaskCompleted` | `taskId`, `stationId`, `workUnitId`, `associateId`, `durationSeconds` | **Yes** |
+| **`TaskCompleted`** | `task.TaskCompleted` | `taskId`, `stationId`, `workUnitId`, `associateId`, `durationSeconds`, `taskType` | **Yes** |
 | `ItemPicked` | `task.ItemPicked` | `taskId` | No — not raised by any use case either |
 | `PackageSealed` | `package.PackageSealed` | `packageId` | No |
 | `WeightDiscrepancyDetected` | `package.WeightDiscrepancyDetected` | `packageId`, `expectedWeight`, `actualWeight` | No |
@@ -74,9 +74,12 @@ below for what's actually on the wire).
 Planning work: the publisher looks the task back up through `ports.TaskRepo`
 and reads `OrderRef()` (populated from `WorkReleased.data.work_unit_id` at
 creation), so Work Planning gets back exactly the id it sent and can call
-`RecordCompletion(workUnitId)`. `associateId`/`durationSeconds` are for the
-labor-performance context (ADR-0014); both are soft/optional (omitted when
-unavailable — e.g. a robot station never checks anyone in).
+`RecordCompletion(workUnitId)`. `associateId`/`durationSeconds`/`taskType`
+are for the labor-performance context (ADR-0014, ADR-0023); all three are
+soft/optional (omitted when unavailable — e.g. a robot station never
+checks anyone in for `associateId`, or the completed task can no longer be
+found for `taskType`). `taskType` is read directly off the same `Task`
+`workUnitId` already loads via `TaskRepo` — no new repo dependency.
 
 ## Events consumed
 

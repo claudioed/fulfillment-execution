@@ -89,6 +89,9 @@ func TestPublish_PublishesTaskCompletedEnrichedWithOrderRef(t *testing.T) {
 	if env.Data.WorkUnitId != "wu-original" {
 		t.Errorf("Data.WorkUnitId = %q, want %q — enrichment via TaskRepo lookup failed", env.Data.WorkUnitId, "wu-original")
 	}
+	if env.Data.TaskType != "PICK" {
+		t.Errorf("Data.TaskType = %q, want %q — enrichment via TaskRepo lookup failed", env.Data.TaskType, "PICK")
+	}
 }
 
 func TestPublish_IgnoresNonTaskCompletedEvents(t *testing.T) {
@@ -217,5 +220,71 @@ func TestPublish_DurationSecondsZeroWhenClaimedAtNil(t *testing.T) {
 	}
 	if env.Data.DurationSeconds != 0 {
 		t.Errorf("Data.DurationSeconds = %d, want 0 when ClaimedAt is nil", env.Data.DurationSeconds)
+	}
+}
+
+// TaskCompleted is enriched with the completed task's own type (ADR-0023),
+// read directly off the already-loaded Task returned by the same TaskRepo
+// lookup WorkUnitId already uses — no new repo dependency. Exercised
+// across all four task types this service models, not just PICK, since a
+// hardcoded single-type fixture elsewhere in this file could otherwise
+// mask a mapping bug for PACK/SLAM/REBIN.
+func TestPublish_EnrichesWithTaskType(t *testing.T) {
+	tests := []struct {
+		name     string
+		taskType task.Type
+	}{
+		{name: "pick", taskType: task.Pick},
+		{name: "pack", taskType: task.Pack},
+		{name: "slam", taskType: task.Slam},
+		{name: "rebin", taskType: task.Rebin},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tasks := memory.NewTaskRepo()
+			tk := task.New("task-1", tt.taskType, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+			if err := tasks.Save(context.Background(), tk); err != nil {
+				t.Fatalf("save task: %v", err)
+			}
+
+			w := &fakeWriter{}
+			p := &outboundkafka.Publisher{Writer: w, Tasks: tasks, NewId: func() string { return "evt-1" }}
+
+			evt := shared.NewTaskCompleted("task-1", "station-1", epoch)
+			if err := p.Publish(context.Background(), evt); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			var env outboundkafka.Envelope
+			if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
+			}
+			if env.Data.TaskType != string(tt.taskType) {
+				t.Errorf("Data.TaskType = %q, want %q", env.Data.TaskType, string(tt.taskType))
+			}
+		})
+	}
+}
+
+// TaskType is "" (omitted on the wire, like AssociateId/DurationSeconds)
+// when the completed Task cannot be found — the enrichment degrades the
+// same way every other repo-lookup-derived field on this envelope already
+// does, rather than panicking on a nil Task.
+func TestPublish_TaskTypeEmptyWhenTaskNotFound(t *testing.T) {
+	tasks := memory.NewTaskRepo()
+	w := &fakeWriter{}
+	p := &outboundkafka.Publisher{Writer: w, Tasks: tasks, NewId: func() string { return "evt-1" }}
+
+	evt := shared.NewTaskCompleted("task-missing", "station-1", epoch)
+	if err := p.Publish(context.Background(), evt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var env outboundkafka.Envelope
+	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.Data.TaskType != "" {
+		t.Errorf("Data.TaskType = %q, want empty when the task cannot be found", env.Data.TaskType)
 	}
 }
