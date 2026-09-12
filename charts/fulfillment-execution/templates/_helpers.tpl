@@ -69,3 +69,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- printf "%s-mcp" (include "fulfillment-execution.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+
+{{/*
+Fully qualified name of the frontend Module Federation remote deployment/service.
+
+The remote is served by its own nginx pod and reached through warehouse-infra's
+Nginx web gateway at /mfes/fulfillment-execution/. It is deliberately a separate
+workload from the API: Kong never routes to it, and the OLTP Service must never
+select it.
+*/}}
+{{- define "fulfillment-execution.frontendFullname" -}}
+{{- include "fulfillment-execution.fullname" . }}-frontend
+{{- end }}
