@@ -20,3 +20,8 @@ var ErrNoClaimableTask = errors.New("usecases: no claimable task for station cap
 // ErrWrongTaskType is returned when a use case is invoked against a task of
 // the wrong type (e.g. sealing a package against a Pick task).
 var ErrWrongTaskType = errors.New("usecases: wrong task type for this operation")
+
+// ErrStationLocationNotWorkCenter is returned by RegisterStation when a
+// supplied locationCode resolves (KNOWN, per facility-layout) to a role
+// other than WorkCenter — see ADR-0024.
+var ErrStationLocationNotWorkCenter = errors.New("usecases: station location does not resolve to a WorkCenter")

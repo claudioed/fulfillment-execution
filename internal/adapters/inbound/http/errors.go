@@ -51,7 +51,8 @@ func statusFor(err error) int {
 		errors.Is(err, station.ErrCapabilityMismatch),
 		errors.Is(err, pack.ErrNoScannedContents),
 		errors.Is(err, consolidation.ErrUnknownLine),
-		errors.Is(err, usecases.ErrWrongTaskType):
+		errors.Is(err, usecases.ErrWrongTaskType),
+		errors.Is(err, usecases.ErrStationLocationNotWorkCenter):
 		return http.StatusUnprocessableEntity
 
 	default:
@@ -104,6 +105,8 @@ func problemTypeAndTitle(err error) (slug, title string) {
 		return "rebin-unknown-line", "Line is not part of this order's required consolidation set"
 	case errors.Is(err, usecases.ErrWrongTaskType):
 		return "wrong-task-type", "Wrong task type for this operation"
+	case errors.Is(err, usecases.ErrStationLocationNotWorkCenter):
+		return "station-location-not-workcenter", "Station's locationCode does not resolve to a facility-layout WorkCenter"
 
 	default:
 		return "internal-error", "Internal server error"

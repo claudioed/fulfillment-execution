@@ -564,7 +564,7 @@ func TestRegisterStation_AddsStationToPool(t *testing.T) {
 	ctx := context.Background()
 	register := &usecases.RegisterStation{Stations: h.stations, Publisher: h.publisher}
 
-	got, err := register.Execute(ctx, "s1", []string{"pick"})
+	got, err := register.Execute(ctx, "s1", []string{"pick"}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -586,11 +586,11 @@ func TestRegisterStation_ReRegisteringUpdatesCapabilities(t *testing.T) {
 	ctx := context.Background()
 	register := &usecases.RegisterStation{Stations: h.stations, Publisher: h.publisher}
 
-	_, err := register.Execute(ctx, "s1", []string{"pick"})
+	_, err := register.Execute(ctx, "s1", []string{"pick"}, "")
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("first registration: %v", err)
 	}
-	_, err = register.Execute(ctx, "s1", []string{"pick", "hazmat"})
+	_, err = register.Execute(ctx, "s1", []string{"pick", "hazmat"}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -788,7 +788,7 @@ func TestRegisterStation_PropagatesSaveError(t *testing.T) {
 	stations.failSave = true
 	register := &usecases.RegisterStation{Stations: stations, Publisher: events.NewBufferedPublisher()}
 
-	_, err := register.Execute(context.Background(), "s1", []string{"pick"})
+	_, err := register.Execute(context.Background(), "s1", []string{"pick"}, "")
 	if !errors.Is(err, errFake) {
 		t.Fatalf("expected save error to propagate, got %v", err)
 	}
@@ -1190,7 +1190,7 @@ func TestRegisterStation_ThenClaimNextSucceeds(t *testing.T) {
 		t.Fatalf("expected ErrStationNotFound before registration, got %v", err)
 	}
 
-	if _, err := register.Execute(ctx, "s1", []string{"pick"}); err != nil {
+	if _, err := register.Execute(ctx, "s1", []string{"pick"}, ""); err != nil {
 		t.Fatalf("unexpected error registering station: %v", err)
 	}
 	if _, err := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false); err != nil {

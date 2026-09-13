@@ -157,7 +157,7 @@ func newWriteServer(t *testing.T) (string, string) {
 	register := &usecases.RegisterStation{Stations: stations, Publisher: publisher}
 	claim := &usecases.ClaimNext{Tasks: tasks, Stations: stations, Publisher: publisher, Clock: clock}
 	ctx := context.Background()
-	if _, err := register.Execute(ctx, "s1", []string{"pick"}); err != nil {
+	if _, err := register.Execute(ctx, "s1", []string{"pick"}, ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if _, err := create.Execute(ctx, task.Pick, shared.NewCPT(clock.Now().Add(time.Hour)), "o1", shared.NewCapabilitySet("pick"), false, false); err != nil {

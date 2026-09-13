@@ -20,6 +20,7 @@ import (
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/events"
+	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/facilitylayout"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/filecatalog"
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafkacatalog"
@@ -193,6 +194,7 @@ func run() error {
 	defer closePublisher()
 	clock := memory.SystemClock{}
 	classificationLookup := buildClassificationLookup(getenv("PRODUCT_CLASSIFICATION_MODE", "permissive"), os.Getenv("INVENTORY_STORAGE_BASE_URL"), logger)
+	locationRoleLookup := buildLocationRoleLookup(getenv("LOCATION_ROLE_MODE", "permissive"), os.Getenv("FACILITY_LAYOUT_BASE_URL"), logger)
 
 	createTask := &usecases.CreateTask{Tasks: taskRepo, Publisher: publisher, Clock: clock, NewId: newTaskId, UnitOfWork: uow}
 
@@ -205,7 +207,7 @@ func run() error {
 		RunSlam:            &usecases.RunSlam{Packages: packageRepo, Publisher: publisher, Clock: clock, UnitOfWork: uow},
 		GetQueueDepth:      &usecases.GetQueueDepth{Tasks: taskRepo},
 		ExpireLeases:       &usecases.ExpireLeases{Tasks: taskRepo, Publisher: publisher, Clock: clock, UnitOfWork: uow},
-		RegisterStation:    &usecases.RegisterStation{Stations: stationRepo, Publisher: publisher},
+		RegisterStation:    &usecases.RegisterStation{Stations: stationRepo, Publisher: publisher, LocationLookup: locationRoleLookup},
 		GetTasksByOrderRef: &usecases.GetTasksByOrderRef{Tasks: taskRepo},
 		CheckInStation:     &usecases.CheckInStation{Stations: stationRepo},
 		CheckOutStation:    &usecases.CheckOutStation{Stations: stationRepo},
@@ -397,6 +399,20 @@ func buildClassificationLookup(mode, inventoryStorageBaseURL string, logger *slo
 	}
 	logger.Info("product classification lookup configured", "mode", "http", "inventory_storage_base_url", inventoryStorageBaseURL)
 	return productclassification.NewClient(inventoryStorageBaseURL, nil)
+}
+
+// buildLocationRoleLookup selects the outbound ports.LocationRoleLookup
+// adapter via LOCATION_ROLE_MODE (http|permissive), defaulting to
+// "permissive" so existing tests, CI and deployments that do not set the
+// env var are unaffected — mirrors buildClassificationLookup's own
+// PRODUCT_CLASSIFICATION_MODE pattern exactly (see ADR-0024). "http"
+// requires FACILITY_LAYOUT_BASE_URL.
+func buildLocationRoleLookup(mode, facilityLayoutBaseURL string, logger *slog.Logger) ports.LocationRoleLookup {
+	if !strings.EqualFold(mode, "http") {
+		return facilitylayout.NewPermissiveLookup()
+	}
+	logger.Info("location role lookup configured", "mode", "http", "facility_layout_base_url", facilityLayoutBaseURL)
+	return facilitylayout.NewClient(facilityLayoutBaseURL, nil)
 }
 
 func newTaskId() shared.TaskId {

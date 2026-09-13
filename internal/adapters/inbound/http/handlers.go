@@ -78,6 +78,7 @@ func toStationResponse(s *station.Station) stationResponse {
 		Id:           string(s.Id()),
 		Capabilities: caps,
 		Occupied:     s.IsOccupied(),
+		LocationCode: s.LocationCode(),
 	}
 }
 
@@ -283,7 +284,7 @@ func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s, err := h.RegisterStation.Execute(r.Context(), req.StationId, req.Capabilities)
+	s, err := h.RegisterStation.Execute(r.Context(), req.StationId, req.Capabilities, req.LocationCode)
 	if err != nil {
 		writeError(w, r, err)
 		return

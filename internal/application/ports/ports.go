@@ -168,3 +168,34 @@ type ClassificationInfo struct {
 type ProductClassificationLookup interface {
 	GetClassification(ctx context.Context, sku string) (ClassificationInfo, error)
 }
+
+// LocationRoleInfo is the placement-relevant subset of a facility-layout
+// LocationSlot's resolved role, as seen from this bounded context — the
+// result of the live, synchronous cross-context lookup RegisterStation
+// uses when a caller supplies an optional locationCode (see ADR-0024).
+// Known=false means "no role info available for this LocationCode",
+// which RegisterStation treats as no constraint (fail-open) — this
+// service does not own facility layout and cannot assume every
+// LocationCode is modeled there (mirrors inventory-storage's own
+// SlotAttributes.Known convention for its own facility-layout lookup).
+type LocationRoleInfo struct {
+	// Role is facility-layout's LocationRole string (e.g. "WorkCenter",
+	// "Storage", "Dock") for this LocationCode. Only meaningful when
+	// Known is true.
+	Role string
+	// Known is false when this LocationCode has no role available
+	// (lookup miss, unmodeled location, or the permissive no-op
+	// adapter).
+	Known bool
+}
+
+// LocationRoleLookup is the outbound port for the live, synchronous,
+// registration-time cross-context read from facility-layout's
+// GET /locations/{locationCode} endpoint, used by RegisterStation to
+// confirm an optional locationCode actually resolves to a WorkCenter
+// (see ADR-0024). Unlike ProductClassificationLookup's per-scanned-item
+// cadence, this runs once per RegisterStation call, only when a
+// locationCode is supplied.
+type LocationRoleLookup interface {
+	GetRole(ctx context.Context, locationCode string) (LocationRoleInfo, error)
+}

@@ -27,11 +27,16 @@ func (r *StationRepo) Save(ctx context.Context, s *station.Station) error {
 		v := string(*s.Occupant())
 		occupant = &v
 	}
+	var locationCode *string
+	if s.LocationCode() != "" {
+		v := s.LocationCode()
+		locationCode = &v
+	}
 	_, err := querierFrom(ctx, r.pool).Exec(ctx, `
-		INSERT INTO stations (id, capabilities, occupant)
-		VALUES ($1, $2, $3)
-		ON CONFLICT (id) DO UPDATE SET capabilities = EXCLUDED.capabilities, occupant = EXCLUDED.occupant
-	`, string(s.Id()), capabilitiesToSlice(s.Capabilities()), occupant)
+		INSERT INTO stations (id, capabilities, occupant, location_code)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (id) DO UPDATE SET capabilities = EXCLUDED.capabilities, occupant = EXCLUDED.occupant, location_code = EXCLUDED.location_code
+	`, string(s.Id()), capabilitiesToSlice(s.Capabilities()), occupant, locationCode)
 	return err
 }
 
@@ -40,10 +45,11 @@ func (r *StationRepo) FindById(ctx context.Context, id shared.StationId) (*stati
 		stationId    string
 		capabilities []string
 		occupant     *string
+		locationCode *string
 	)
 	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
-		SELECT id, capabilities, occupant FROM stations WHERE id = $1
-	`, string(id)).Scan(&stationId, &capabilities, &occupant)
+		SELECT id, capabilities, occupant, location_code FROM stations WHERE id = $1
+	`, string(id)).Scan(&stationId, &capabilities, &occupant, &locationCode)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -56,7 +62,11 @@ func (r *StationRepo) FindById(ctx context.Context, id shared.StationId) (*stati
 		v := station.OccupantId(*occupant)
 		occ = &v
 	}
-	return station.Rehydrate(shared.StationId(stationId), sliceToCapabilities(capabilities), occ), nil
+	var loc string
+	if locationCode != nil {
+		loc = *locationCode
+	}
+	return station.RehydrateWithLocation(shared.StationId(stationId), sliceToCapabilities(capabilities), occ, loc), nil
 }
 
 // CountByCapability returns how many registered stations have capability
