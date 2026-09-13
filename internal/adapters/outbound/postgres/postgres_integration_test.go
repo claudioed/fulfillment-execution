@@ -139,6 +139,51 @@ func TestStationRepo_SaveAndFindById(t *testing.T) {
 	}
 }
 
+// TestStationRepo_SaveAndFindById_WithLocationCode proves the new
+// location_code column (ADR-0024) round-trips against real Postgres, both
+// when set and when left empty.
+func TestStationRepo_SaveAndFindById_WithLocationCode(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewStationRepo(pool)
+
+	id := shared.StationId("integration-station-location")
+	s := station.New(id, shared.NewCapabilitySet("pack"))
+	s.SetLocationCode("WH1-STOR-AMB-A07-01-01-A")
+
+	if err := repo.Save(context.Background(), s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := repo.FindById(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindById: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected station to be found")
+	}
+	if got.LocationCode() != "WH1-STOR-AMB-A07-01-01-A" {
+		t.Fatalf("expected round-tripped LocationCode, got %q", got.LocationCode())
+	}
+}
+
+func TestStationRepo_SaveAndFindById_EmptyLocationCode(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewStationRepo(pool)
+
+	id := shared.StationId("integration-station-no-location")
+	s := station.New(id, shared.NewCapabilitySet("pick"))
+
+	if err := repo.Save(context.Background(), s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := repo.FindById(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindById: %v", err)
+	}
+	if got.LocationCode() != "" {
+		t.Fatalf("expected empty LocationCode, got %q", got.LocationCode())
+	}
+}
+
 // TestStationRepo_CountByCapability proves the real Postgres
 // ANY(capabilities) containment query against actual rows, not just the
 // in-memory adapter's Go-side filter — the two must agree, since

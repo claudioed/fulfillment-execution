@@ -164,6 +164,10 @@ Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 | `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
 | `MCP_ADDR` | `:8090` | `cmd/mcp` listen address — MCP Streamable HTTP at `/` and `/mcp`, unauthenticated `GET /healthz` |
 | `REPORTS_BASE_URL` | (unset) | `cmd/mcp` only: base URL of `cmd/fulfillment-reports`; when set, registers the `get_fulfillment_throughput_report` tool |
+| `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `permissive` (default, no-op, every scanned SKU treated as unclassified) or `http` — live per-scanned-SKU DOT hazard classification lookup from inventory-storage at seal time (ADR-0010) |
+| `INVENTORY_STORAGE_BASE_URL` | (unset) | Base URL for inventory-storage's REST API; required when `PRODUCT_CLASSIFICATION_MODE=http` |
+| `LOCATION_ROLE_MODE` | `permissive` | `permissive` (default, no-op, a supplied `locationCode` is recorded unchecked) or `http` — live registration-time lookup of a station's `locationCode` role from facility-layout, rejecting a KNOWN non-WorkCenter role (ADR-0024) |
+| `FACILITY_LAYOUT_BASE_URL` | (unset) | Base URL for facility-layout's REST API; required when `LOCATION_ROLE_MODE=http` |
 | `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTel Collector's OTLP/gRPC address (see [Observability](#observability)) |
 | `OTEL_SERVICE_NAME` | `fulfillment-execution` | `service.name` resource attribute |

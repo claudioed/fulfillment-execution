@@ -27,6 +27,15 @@ type Station struct {
 	id           shared.StationId
 	capabilities shared.CapabilitySet
 	occupant     *OccupantId
+	// locationCode is an optional facility-layout LocationCode identifying
+	// where this station physically sits (ADR-0024). Empty by default so
+	// every existing caller (New/Rehydrate's signature is unchanged) keeps
+	// compiling and behaving exactly as before this feature existed —
+	// mirrors wes-work-planning's PathPlan.SetTravelDistance and this
+	// service's own Task.SKU: a setter after construction, not a
+	// constructor parameter, since this is additive and not every
+	// station's registration invariant.
+	locationCode string
 }
 
 // New creates an unoccupied station with the given capabilities.
@@ -43,6 +52,23 @@ func (s *Station) Id() shared.StationId               { return s.id }
 func (s *Station) Capabilities() shared.CapabilitySet { return s.capabilities }
 func (s *Station) Occupant() *OccupantId              { return s.occupant }
 func (s *Station) IsOccupied() bool                   { return s.occupant != nil }
+
+// LocationCode is the facility-layout LocationCode this station sits at,
+// or "" if none was recorded (ADR-0024).
+func (s *Station) LocationCode() string { return s.locationCode }
+
+// SetLocationCode records the station's physical facility-layout
+// LocationCode. A plain setter, not a New/Rehydrate parameter — see the
+// locationCode field's own doc comment.
+func (s *Station) SetLocationCode(locationCode string) { s.locationCode = locationCode }
+
+// RehydrateWithLocation reconstructs a Station from persisted state
+// including its optional locationCode. A separate function rather than a
+// third Rehydrate parameter, so every pre-existing Rehydrate call site
+// (tests, other adapters) keeps compiling unchanged.
+func RehydrateWithLocation(id shared.StationId, capabilities shared.CapabilitySet, occupant *OccupantId, locationCode string) *Station {
+	return &Station{id: id, capabilities: capabilities, occupant: occupant, locationCode: locationCode}
+}
 
 // CheckIn assigns an occupant to the station. Rejected if the station
 // already has an occupant (one occupant at a time).

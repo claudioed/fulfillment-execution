@@ -231,6 +231,19 @@ paths:
                 occupied: false
         "400":
           $ref: "#/components/responses/BadRequestNoInstance"
+        "422":
+          description: >
+            The supplied locationCode is KNOWN (per facility-layout) to
+            resolve to a role other than WorkCenter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-location-not-workcenter
+                title: Station's locationCode does not resolve to a facility-layout WorkCenter
+                status: 422
+                detail: "usecases: station location does not resolve to a WorkCenter"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -1194,6 +1207,17 @@ components:
           items:
             type: string
             example: pick
+        locationCode:
+          type: string
+          description: >
+            Optional facility-layout LocationCode identifying where this
+            station physically sits (ADR-0024). Omitted entirely means
+            unchecked — no role validation is attempted. When supplied
+            and the location-role lookup is configured, a LocationCode
+            that KNOWINGLY resolves to a role other than WorkCenter is
+            rejected (422); an unrecognized LocationCode, or an
+            unavailable lookup, fails open and is recorded unchecked.
+          example: WH1-STOR-AMB-A07-01-01-A
       example:
         stationId: station-1
         capabilities: [pick]
@@ -1213,6 +1237,12 @@ components:
           type: boolean
           description: Whether the station currently has an occupant checked in.
           example: false
+        locationCode:
+          type: string
+          description: >
+            Omitted entirely (not defaulted to "") when the station has
+            no recorded locationCode (ADR-0024).
+          example: WH1-STOR-AMB-A07-01-01-A
 
     CheckInStationRequest:
       type: object

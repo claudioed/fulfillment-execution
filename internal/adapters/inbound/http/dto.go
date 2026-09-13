@@ -120,6 +120,10 @@ type expireLeasesResponse struct {
 type registerStationRequest struct {
 	StationId    string   `json:"stationId"`
 	Capabilities []string `json:"capabilities"`
+	// LocationCode is an optional facility-layout LocationCode identifying
+	// where this station physically sits (ADR-0024). Omitted entirely
+	// means unchecked — no role validation is attempted.
+	LocationCode string `json:"locationCode,omitempty"`
 }
 
 func (r registerStationRequest) validate() string {
@@ -137,6 +141,10 @@ type stationResponse struct {
 	Id           string   `json:"id"`
 	Capabilities []string `json:"capabilities"`
 	Occupied     bool     `json:"occupied"`
+	// LocationCode is omitted entirely (not defaulted to "") when the
+	// station has no recorded locationCode — mirrors the omit-when-unknown
+	// discipline of wes-work-planning's travelDistanceM (ADR-0024).
+	LocationCode string `json:"locationCode,omitempty"`
 }
 
 type checkInStationRequest struct {

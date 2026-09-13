@@ -104,6 +104,7 @@ const sidebars: SidebarsConfig = {
         'adr/0021-rest-identity-static-bearer-scopes',
         'adr/0022-remove-rest-mcp-auth',
         'adr/0023-task-type-on-wire',
+        'adr/0024-station-location-code-and-workcenter-role-check',
       ],
     },
   ],
