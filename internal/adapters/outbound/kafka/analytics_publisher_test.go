@@ -44,6 +44,9 @@ func (fakeTaskRepo) FindClaimableByType(context.Context, task.Type, time.Time) (
 	return nil, nil
 }
 func (fakeTaskRepo) FindAllClaimed(context.Context) ([]*task.Task, error) { return nil, nil }
+func (fakeTaskRepo) FindOpenPastCPT(context.Context, time.Time) ([]*task.Task, error) {
+	return nil, nil
+}
 func (fakeTaskRepo) CountByTypeAndStatus(context.Context, task.Type, task.Status) (int, error) {
 	return 0, nil
 }

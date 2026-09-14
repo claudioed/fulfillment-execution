@@ -160,6 +160,20 @@ func (t *Task) IsAvailable(now time.Time) bool {
 	return false
 }
 
+// IsCPTMissed reports whether this task is still open (Pending or Claimed —
+// i.e. not Completed) at or after its CPT deadline. Mirrors Lease.expired's
+// boundary convention exactly: a task due EXACTLY at now counts as missed
+// (not-before, not strictly-after), so a sweep tick that lands precisely on
+// the CPT catches it rather than waiting for the next tick. Pure domain
+// logic, no I/O — the Clock-driven sweep (SweepCPTMisses) is the caller
+// that supplies now and decides what to do about a true result.
+func (t *Task) IsCPTMissed(now time.Time) bool {
+	if t.status == Completed {
+		return false
+	}
+	return !now.Before(t.cpt.Time())
+}
+
 // ExpireLeaseIfDue frees a Claimed task whose lease has passed, returning it
 // to Pending. Returns true if it freed the task.
 func (t *Task) ExpireLeaseIfDue(now time.Time) bool {

@@ -356,6 +356,51 @@ func mustStations(t *testing.T, ids ...string) *memory.StationRepo {
 	return stations
 }
 
+// --- SweepCPTMisses ---
+
+func TestSweepCPTMisses_EachReportedTaskGetsItsOwnCommittedScope(t *testing.T) {
+	ctx := context.Background()
+	tasks := memory.NewTaskRepo()
+	clock := memory.NewFixedClock(epoch)
+	create := &usecases.CreateTask{Tasks: tasks, Publisher: &scopedPublisher{}, Clock: clock, NewId: idSeq("t")}
+	for i := 0; i < 2; i++ {
+		_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Minute)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	}
+	clock.Advance(2 * time.Minute)
+
+	pub := &scopedPublisher{}
+	uow := &recordingUnitOfWork{}
+	sweep := &usecases.SweepCPTMisses{Tasks: tasks, Publisher: pub, Clock: clock, UnitOfWork: uow}
+	reported, err := sweep.Execute(ctx)
+	if err != nil || reported != 2 {
+		t.Fatalf("expected 2 reported, got %d err=%v", reported, err)
+	}
+	if uow.opened != 2 || uow.committed != 2 {
+		t.Fatalf("expected one committed scope per reported task, got opened=%d committed=%d", uow.opened, uow.committed)
+	}
+	if !pub.allInScope() {
+		t.Fatalf("expected every Publish inside a scope, publishes=%v", pub.inScope)
+	}
+}
+
+func TestSweepCPTMisses_PublishFailure_RollsBackThatTask(t *testing.T) {
+	ctx := context.Background()
+	tasks := memory.NewTaskRepo()
+	clock := memory.NewFixedClock(epoch)
+	create := &usecases.CreateTask{Tasks: tasks, Publisher: &scopedPublisher{}, Clock: clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Minute)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	clock.Advance(2 * time.Minute)
+
+	uow := &recordingUnitOfWork{}
+	sweep := &usecases.SweepCPTMisses{Tasks: tasks, Publisher: &scopedPublisher{err: errors.New("boom")}, Clock: clock, UnitOfWork: uow}
+	if _, err := sweep.Execute(ctx); err == nil {
+		t.Fatal("expected the publish error to propagate")
+	}
+	if uow.rolledBack != 1 || uow.committed != 0 {
+		t.Fatalf("expected a rollback, got committed=%d rolledBack=%d", uow.committed, uow.rolledBack)
+	}
+}
+
 // --- SealPackage ---
 
 func sealHarness(t *testing.T) (*scopedTaskRepo, *scopedPackageRepo, shared.TaskId, *memory.FixedClock) {
@@ -439,8 +484,8 @@ func TestRunSlam_LabelApplied_SaveAndPublishRunInsideOneUnitOfWork(t *testing.T)
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertOneCommittedScope(t, uow, pub, packages.savesInScope)
-	if len(pub.names) != 1 || pub.names[0] != "LabelApplied" {
-		t.Fatalf("expected LabelApplied, got %v", pub.names)
+	if len(pub.names) != 2 || pub.names[0] != "LabelApplied" || pub.names[1] != "PackageManifested" {
+		t.Fatalf("expected LabelApplied+PackageManifested, got %v", pub.names)
 	}
 }
 
