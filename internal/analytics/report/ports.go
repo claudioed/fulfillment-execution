@@ -37,4 +37,16 @@ type ProjectionStore interface {
 	ApplyLeaseExpired(ctx context.Context, eventId, taskId, taskType, stationId string, at time.Time) error
 	// ApplyWeightDiscrepancy records a SLAM weigh-check diversion at `at`.
 	ApplyWeightDiscrepancy(ctx context.Context, eventId, taskType, stationId string, at time.Time) error
+	// ApplyPackageManifested records a SLAM pass at `at` (the on-time-to-CPT
+	// KPI, companion to order-management ADR 0014 §6 — see ADR-0026).
+	// taskType/stationId are the ORIGINATING SLAM TASK's dimensions
+	// (resolved by the caller via a Task lookup keyed on the package's
+	// OrderRef — packages have no task-type/station dimension of their own,
+	// so they inherit the SLAM task's for this rollup's existing grain).
+	// onTime is the caller's precomputed comparison of the manifest time
+	// against that task's CPT (manifestedAt <= cpt counts as on-time,
+	// mirroring task.Task.IsCPTMissed's boundary for symmetry — see
+	// ADR-0026); this port stays free of any CPT/time-comparison logic of
+	// its own; it only records the caller's verdict.
+	ApplyPackageManifested(ctx context.Context, eventId, taskType, stationId string, at time.Time, onTime bool) error
 }

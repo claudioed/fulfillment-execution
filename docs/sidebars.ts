@@ -105,6 +105,8 @@ const sidebars: SidebarsConfig = {
         'adr/0022-remove-rest-mcp-auth',
         'adr/0023-task-type-on-wire',
         'adr/0024-station-location-code-and-workcenter-role-check',
+        'adr/0025-cpt-missed-sweep-and-package-manifested',
+        'adr/0026-on-time-to-cpt-kpi',
       ],
     },
   ],

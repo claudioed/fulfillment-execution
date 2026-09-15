@@ -22,6 +22,15 @@ store (arch-test enforces this).
   - `GET /reports/throughput/freshness` (lag vs real time)
   - MCP tool `get_fulfillment_throughput_report` (calls the reports REST;
     never opens the analytical DB directly)
+  - On-time-to-CPT KPI (ADR-0026, companion to order-management ADR 0014
+    §6): `PackagesManifested`/`PackagesOnTimeToCPT`/`PackagesLateToCPT`
+    raw counts on each row (SLAM rows only in practice), attributed to
+    the manifested package's originating SLAM task via
+    `TaskRepo.FindByOrderRef`. `manifestedAt <= cpt` counts as on time —
+    the deliberate mirror of `task.Task.IsCPTMissed`'s own boundary.
+    Rate is derived by the caller, never stored. MCP tool
+    `get_on_time_to_cpt` sums the raw counts across a window and derives
+    the rate.
 
 ## Standard metrics convention (ADR-0019)
 

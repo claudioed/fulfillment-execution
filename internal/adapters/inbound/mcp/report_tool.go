@@ -24,6 +24,12 @@ type ThroughputRowView struct {
 	AvgClaimToCompleteSeconds float64 `json:"avgClaimToCompleteSeconds"`
 	LeaseExpiries             int     `json:"leaseExpiries"`
 	WeighCheckDiverts         int     `json:"weighCheckDiverts"`
+	// PackagesManifested/PackagesOnTimeToCPT/PackagesLateToCPT back the
+	// get_on_time_to_cpt tool (ADR-0026); see reports_handler.go's DTO of
+	// the same name for the counting convention.
+	PackagesManifested  int `json:"packagesManifested"`
+	PackagesOnTimeToCPT int `json:"packagesOnTimeToCPT"`
+	PackagesLateToCPT   int `json:"packagesLateToCPT"`
 }
 
 // ThroughputReportView is the throughput report body.

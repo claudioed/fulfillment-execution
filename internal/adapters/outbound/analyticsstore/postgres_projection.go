@@ -161,6 +161,31 @@ func (p *PostgresProjection) ApplyWeightDiscrepancy(ctx context.Context, eventId
 	})
 }
 
+// ApplyPackageManifested increments the on-time-to-CPT counters (ADR-0026):
+// packages_manifested always, plus either packages_on_time_cpt or
+// packages_late_cpt per onTime. taskType/stationId are the originating SLAM
+// task's dimensions, resolved by the publisher before this call — this
+// projection performs no CPT comparison of its own, only the caller's
+// verdict is recorded. Idempotent on eventId.
+func (p *PostgresProjection) ApplyPackageManifested(ctx context.Context, eventId, taskType, stationId string, at time.Time, onTime bool) error {
+	return p.inTx(ctx, func(tx pgx.Tx) error {
+		isNew, err := claim(ctx, tx, eventId, at)
+		if err != nil {
+			return fmt.Errorf("analyticsstore: claim event: %w", err)
+		}
+		if !isNew {
+			return nil
+		}
+		delta := rollupDelta{packagesManifested: 1}
+		if onTime {
+			delta.packagesOnTimeToCPT = 1
+		} else {
+			delta.packagesLateToCPT = 1
+		}
+		return upsertRollup(ctx, tx, taskType, stationId, at, delta)
+	})
+}
+
 // rollupDelta is the set of counter increments a single event contributes to
 // a throughput row.
 type rollupDelta struct {
@@ -169,6 +194,9 @@ type rollupDelta struct {
 	weighCheckDiverts    int
 	claimSeconds         float64
 	completionsWithClaim int
+	packagesManifested   int
+	packagesOnTimeToCPT  int
+	packagesLateToCPT    int
 }
 
 // upsertRollup adds delta into the (task_type, station_id, hour_bucket) row,
@@ -180,17 +208,22 @@ func upsertRollup(ctx context.Context, tx pgx.Tx, taskType, stationId string, at
 		`INSERT INTO throughput_rollup (
 			task_type, station_id, hour_bucket,
 			completions, lease_expiries, weigh_check_diverts,
-			claim_to_complete_seconds, completions_with_claim)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			claim_to_complete_seconds, completions_with_claim,
+			packages_manifested, packages_on_time_cpt, packages_late_cpt)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		 ON CONFLICT (task_type, station_id, hour_bucket) DO UPDATE SET
 			completions               = throughput_rollup.completions + EXCLUDED.completions,
 			lease_expiries            = throughput_rollup.lease_expiries + EXCLUDED.lease_expiries,
 			weigh_check_diverts       = throughput_rollup.weigh_check_diverts + EXCLUDED.weigh_check_diverts,
 			claim_to_complete_seconds = throughput_rollup.claim_to_complete_seconds + EXCLUDED.claim_to_complete_seconds,
-			completions_with_claim    = throughput_rollup.completions_with_claim + EXCLUDED.completions_with_claim`,
+			completions_with_claim    = throughput_rollup.completions_with_claim + EXCLUDED.completions_with_claim,
+			packages_manifested       = throughput_rollup.packages_manifested + EXCLUDED.packages_manifested,
+			packages_on_time_cpt      = throughput_rollup.packages_on_time_cpt + EXCLUDED.packages_on_time_cpt,
+			packages_late_cpt         = throughput_rollup.packages_late_cpt + EXCLUDED.packages_late_cpt`,
 		taskType, stationId, bucket,
 		delta.completions, delta.leaseExpiries, delta.weighCheckDiverts,
-		delta.claimSeconds, delta.completionsWithClaim)
+		delta.claimSeconds, delta.completionsWithClaim,
+		delta.packagesManifested, delta.packagesOnTimeToCPT, delta.packagesLateToCPT)
 	if err != nil {
 		return fmt.Errorf("analyticsstore: upsert rollup: %w", err)
 	}
