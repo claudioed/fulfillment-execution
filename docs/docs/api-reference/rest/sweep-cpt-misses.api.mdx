@@ -1,0 +1,61 @@
+---
+id: sweep-cpt-misses
+title: "Sweep every still-open task whose CPT has passed and report it as missed"
+description: "The Clock-driven half of the promise feedback loop with order-management (ADR 0014 §5, this service's own ADR-0025): scans every task still open (Pending or Claimed — i.e. not Completed) and, for each whose CPT is at or before now, publishes `TaskCPTMissed`. Unlike `/tasks/expire-leases`, this never mutates the task's own lifecycle state — a CPT miss is a fact reported upstream, not a state transition. A collection-level action on the `tasks` resource, mirroring `/tasks/expire-leases`'s own convention exactly. **Not idempotent in the usual sense by design**: a task still open past its CPT is reported again on every sweep pass for as long as it remains open — order-management's `RepromiseOrder` consumer is explicitly designed (ADR 0014 §5) to be idempotent on `(orderId, sourceEventId)` because of this. Takes no request body."
+sidebar_label: "Sweep every still-open task whose CPT has passed and report it as missed"
+hide_title: true
+hide_table_of_contents: true
+api: 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
+sidebar_class_name: "post api-method"
+info_path: docs/api-reference/rest/fulfillment-execution-api
+custom_edit_url: null
+hide_send_button: true
+---
+
+import MethodEndpoint from "@theme/ApiExplorer/MethodEndpoint";
+import ParamsDetails from "@theme/ParamsDetails";
+import RequestSchema from "@theme/RequestSchema";
+import StatusCodes from "@theme/StatusCodes";
+import OperationTabs from "@theme/OperationTabs";
+import TabItem from "@theme/TabItem";
+import Heading from "@theme/Heading";
+import Translate from "@docusaurus/Translate";
+
+<Heading
+  as={"h1"}
+  className={"openapi__heading"}
+  children={"Sweep every still-open task whose CPT has passed and report it as missed"}
+>
+</Heading>
+
+<MethodEndpoint
+  method={"post"}
+  path={"/tasks/sweep-cpt-misses"}
+  context={"endpoint"}
+>
+  
+</MethodEndpoint>
+
+
+
+The Clock-driven half of the promise feedback loop with order-management (ADR 0014 §5, this service's own ADR-0025): scans every task still open (Pending or Claimed — i.e. not Completed) and, for each whose CPT is at or before now, publishes `TaskCPTMissed`. Unlike `/tasks/expire-leases`, this never mutates the task's own lifecycle state — a CPT miss is a fact reported upstream, not a state transition. A collection-level action on the `tasks` resource, mirroring `/tasks/expire-leases`'s own convention exactly. **Not idempotent in the usual sense by design**: a task still open past its CPT is reported again on every sweep pass for as long as it remains open — order-management's `RepromiseOrder` consumer is explicitly designed (ADR 0014 §5) to be idempotent on `(orderId, sourceEventId)` because of this. Takes no request body.
+
+
+<ParamsDetails>
+  
+</ParamsDetails>
+
+<RequestSchema
+  {...require("./sweep-cpt-misses.RequestSchema.json")}
+>
+  
+</RequestSchema>
+
+<StatusCodes
+  {...require("./sweep-cpt-misses.StatusCodes.json")}
+>
+  
+</StatusCodes>
+
+
+      

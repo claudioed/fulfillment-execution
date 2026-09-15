@@ -117,6 +117,10 @@ type expireLeasesResponse struct {
 	Freed int `json:"freed"`
 }
 
+type sweepCPTMissesResponse struct {
+	Reported int `json:"reported"`
+}
+
 type registerStationRequest struct {
 	StationId    string   `json:"stationId"`
 	Capabilities []string `json:"capabilities"`

@@ -219,6 +219,7 @@ func run() error {
 			UnitOfWork:     uow,
 		},
 		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stationRepo},
+		SweepCPTMisses:       &usecases.SweepCPTMisses{Tasks: taskRepo, Publisher: publisher, Clock: clock, UnitOfWork: uow},
 	}
 	router := inboundhttp.NewRouter(handlers, logger)
 

@@ -26,6 +26,8 @@ func TestDomainEvents_NameAndOccurredAt(t *testing.T) {
 		{"WeightDiscrepancyDetected", shared.NewWeightDiscrepancyDetected("p1", 2.0, 2.5, eventNow), "WeightDiscrepancyDetected"},
 		{"LabelApplied", shared.NewLabelApplied("p1", eventNow), "LabelApplied"},
 		{"PackageDiverted", shared.NewPackageDiverted("p1", eventNow), "PackageDiverted"},
+		{"TaskCPTMissed", shared.NewTaskCPTMissed("t1", "order-1", "PICK", eventNow.Add(-time.Hour), eventNow), "TaskCPTMissed"},
+		{"PackageManifested", shared.NewPackageManifested("p1", "order-1", eventNow), "PackageManifested"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,5 +61,37 @@ func TestNewWeightDiscrepancyDetected_CarriesWeights(t *testing.T) {
 	}
 	if e.ActualWeight != 2.5 {
 		t.Fatalf("expected ActualWeight 2.5, got %v", e.ActualWeight)
+	}
+}
+
+// TaskCPTMissed must carry enough for order-management's RepromiseOrder
+// consumer (ADR 0014 §5) to identify the affected order/shipment-group and
+// reason about which leg missed and by how much (ADR-0025).
+func TestNewTaskCPTMissed_CarriesOrderTaskTypeAndCPT(t *testing.T) {
+	cpt := eventNow.Add(-30 * time.Minute)
+	e := shared.NewTaskCPTMissed("t1", "order-1", "PICK", cpt, eventNow)
+	if e.TaskId != "t1" {
+		t.Fatalf("expected TaskId t1, got %s", e.TaskId)
+	}
+	if e.OrderRef != "order-1" {
+		t.Fatalf("expected OrderRef order-1, got %s", e.OrderRef)
+	}
+	if e.TaskType != "PICK" {
+		t.Fatalf("expected TaskType PICK, got %s", e.TaskType)
+	}
+	if !e.CPT.Equal(cpt) {
+		t.Fatalf("expected CPT %v, got %v", cpt, e.CPT)
+	}
+}
+
+// PackageManifested must carry the OrderRef so RepromiseOrder can key its
+// recompute on the same order/shipment-group identity as TaskCPTMissed.
+func TestNewPackageManifested_CarriesOrderRef(t *testing.T) {
+	e := shared.NewPackageManifested("p1", "order-1", eventNow)
+	if e.PackageId != "p1" {
+		t.Fatalf("expected PackageId p1, got %s", e.PackageId)
+	}
+	if e.OrderRef != "order-1" {
+		t.Fatalf("expected OrderRef order-1, got %s", e.OrderRef)
 	}
 }

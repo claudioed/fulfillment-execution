@@ -112,6 +112,59 @@ func TestPublish_IgnoresNonTaskCompletedEvents(t *testing.T) {
 	}
 }
 
+// TaskCPTMissed (ADR-0025) is published onto the same integration topic,
+// with no repo enrichment needed.
+func TestPublish_PublishesTaskCPTMissed(t *testing.T) {
+	w := &fakeWriter{}
+	p := &outboundkafka.Publisher{Writer: w, NewId: func() string { return "evt-cpt" }}
+
+	cpt := epoch.Add(-time.Hour)
+	evt := shared.NewTaskCPTMissed("task-1", "order-1", "PICK", cpt, epoch)
+	if err := p.Publish(context.Background(), evt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(w.msgs) != 1 {
+		t.Fatalf("expected exactly 1 published message, got %d", len(w.msgs))
+	}
+
+	var env outboundkafka.TaskCPTMissedEnvelope
+	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.EventType != "TaskCPTMissed" {
+		t.Errorf("EventType = %q, want TaskCPTMissed", env.EventType)
+	}
+	if env.Data.TaskId != "task-1" || env.Data.OrderRef != "order-1" || env.Data.TaskType != "PICK" {
+		t.Errorf("Data = %+v", env.Data)
+	}
+}
+
+// PackageManifested (ADR-0025) is published onto the same integration
+// topic, with no repo enrichment needed.
+func TestPublish_PublishesPackageManifested(t *testing.T) {
+	w := &fakeWriter{}
+	p := &outboundkafka.Publisher{Writer: w, NewId: func() string { return "evt-manifest" }}
+
+	evt := shared.NewPackageManifested("pkg-1", "order-1", epoch)
+	if err := p.Publish(context.Background(), evt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(w.msgs) != 1 {
+		t.Fatalf("expected exactly 1 published message, got %d", len(w.msgs))
+	}
+
+	var env outboundkafka.PackageManifestedEnvelope
+	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.EventType != "PackageManifested" {
+		t.Errorf("EventType = %q, want PackageManifested", env.EventType)
+	}
+	if env.Data.PackageId != "pkg-1" || env.Data.OrderRef != "order-1" {
+		t.Errorf("Data = %+v", env.Data)
+	}
+}
+
 // TaskCompleted is enriched with the completing associate's identity
 // (the occupant of the claiming station at publish time) and the task's
 // duration (completion time minus the claim's start time) — see ADR-0014.

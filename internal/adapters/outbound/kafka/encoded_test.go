@@ -108,6 +108,88 @@ func TestPublisher_Encode_PropagatesEnrichmentLookupError(t *testing.T) {
 	}
 }
 
+// TaskCPTMissed (ADR-0025) needs no repo enrichment: every wire field
+// comes straight off the domain event.
+func TestPublisher_Encode_ProducesTaskCPTMissedMessageWithoutWriting(t *testing.T) {
+	p := outboundkafka.NewPublisherWithWriter(nil, nil, nil, func() string { return "evt-cpt" })
+	cpt := epoch.Add(-30 * time.Minute)
+
+	encoded, err := p.Encode(context.Background(), shared.NewTaskCPTMissed("task-1", "order-1", "PICK", cpt, epoch))
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if len(encoded) != 1 {
+		t.Fatalf("expected 1 encoded message, got %d", len(encoded))
+	}
+	enc := encoded[0]
+	if enc.Topic != outboundkafka.Topic {
+		t.Errorf("Topic = %q, want %q", enc.Topic, outboundkafka.Topic)
+	}
+	if enc.EventType != "TaskCPTMissed" {
+		t.Errorf("EventType = %q, want TaskCPTMissed", enc.EventType)
+	}
+	if string(enc.Key) != "task-1" {
+		t.Errorf("Key = %q, want task-1", enc.Key)
+	}
+	var env outboundkafka.TaskCPTMissedEnvelope
+	if err := json.Unmarshal(enc.Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.EventId != "evt-cpt" || env.Source != "fulfillment-execution" || !env.OccurredAt.Equal(epoch) {
+		t.Errorf("envelope = %+v", env)
+	}
+	if env.Data.TaskId != "task-1" || env.Data.OrderRef != "order-1" || env.Data.TaskType != "PICK" || !env.Data.Cpt.Equal(cpt) {
+		t.Errorf("data = %+v", env.Data)
+	}
+}
+
+// PackageManifested (ADR-0025) needs no repo enrichment either.
+func TestPublisher_Encode_ProducesPackageManifestedMessageWithoutWriting(t *testing.T) {
+	p := outboundkafka.NewPublisherWithWriter(nil, nil, nil, func() string { return "evt-manifest" })
+
+	encoded, err := p.Encode(context.Background(), shared.NewPackageManifested("pkg-1", "order-1", epoch))
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if len(encoded) != 1 {
+		t.Fatalf("expected 1 encoded message, got %d", len(encoded))
+	}
+	enc := encoded[0]
+	if enc.Topic != outboundkafka.Topic {
+		t.Errorf("Topic = %q, want %q", enc.Topic, outboundkafka.Topic)
+	}
+	if enc.EventType != "PackageManifested" {
+		t.Errorf("EventType = %q, want PackageManifested", enc.EventType)
+	}
+	if string(enc.Key) != "pkg-1" {
+		t.Errorf("Key = %q, want pkg-1", enc.Key)
+	}
+	var env outboundkafka.PackageManifestedEnvelope
+	if err := json.Unmarshal(enc.Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	if env.EventId != "evt-manifest" || env.Source != "fulfillment-execution" || !env.OccurredAt.Equal(epoch) {
+		t.Errorf("envelope = %+v", env)
+	}
+	if env.Data.PackageId != "pkg-1" || env.Data.OrderRef != "order-1" {
+		t.Errorf("data = %+v", env.Data)
+	}
+}
+
+// A LabelApplied event (in the analytics contract but not the integration
+// one) is still skipped by the integration Publisher/Encode, unaffected by
+// the TaskCPTMissed/PackageManifested widening.
+func TestPublisher_Encode_StillSkipsEventsOutsideTheIntegrationContract(t *testing.T) {
+	p := outboundkafka.NewPublisherWithWriter(nil, nil, nil, func() string { return "evt-1" })
+	encoded, err := p.Encode(context.Background(), shared.NewLabelApplied("pkg-1", epoch))
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	if len(encoded) != 0 {
+		t.Fatalf("expected 0 encoded messages, got %d", len(encoded))
+	}
+}
+
 func TestAnalyticsPublisher_Encode_ProducesOneMessagePerContractEvent(t *testing.T) {
 	p := outboundkafka.NewAnalyticsPublisherWithWriter(nil, fakeTaskRepo{taskType: task.Pack, found: true}, func() string { return "evt-a" })
 
