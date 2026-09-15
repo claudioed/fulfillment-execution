@@ -117,3 +117,4 @@ gets a "Supersedes ADR-NNNN" line in its Context, the old one gets
 | [0023](./0023-task-type-on-wire.md) | Put the completed task's own type on `TaskCompleted`'s wire payload, closing labor-performance's documented per-task-type gap | Accepted |
 | [0024](./0024-station-location-code-and-workcenter-role-check.md) | Optional `Station.locationCode`, validated against facility-layout's WorkCenter role | Accepted |
 | [0025](./0025-cpt-missed-sweep-and-package-manifested.md) | `TaskCPTMissed` sweep and `PackageManifested` on the outbox (companion to order-management ADR 0014 §5) | Accepted |
+| [0026](./0026-on-time-to-cpt-kpi.md) | On-time-to-CPT KPI on the throughput analytics data product (companion to order-management ADR 0014 §6) | Accepted |

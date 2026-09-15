@@ -39,6 +39,9 @@ type rowAcc struct {
 	weighCheckDiverts    int
 	totalClaimSeconds    float64
 	completionsWithClaim int
+	packagesManifested   int
+	packagesOnTimeToCPT  int
+	packagesLateToCPT    int
 }
 
 // NewMemoryStore constructs an empty MemoryStore.
@@ -136,6 +139,26 @@ func (s *MemoryStore) ApplyWeightDiscrepancy(_ context.Context, eventId, taskTyp
 	return nil
 }
 
+// ApplyPackageManifested records a SLAM pass (the on-time-to-CPT KPI,
+// ADR-0026), attributed to the originating SLAM task's (taskType,
+// stationId), and bumps either the on-time or late counter per onTime.
+// Idempotent on eventId.
+func (s *MemoryStore) ApplyPackageManifested(_ context.Context, eventId, taskType, stationId string, at time.Time, onTime bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.firstApply(eventId, at) {
+		return nil
+	}
+	r := s.row(report.RowKey{TaskType: taskType, StationId: stationId, HourBucket: hourBucket(at)})
+	r.packagesManifested++
+	if onTime {
+		r.packagesOnTimeToCPT++
+	} else {
+		r.packagesLateToCPT++
+	}
+	return nil
+}
+
 // Query returns the rows matching q. From is inclusive, To is exclusive,
 // both compared against a row's HourBucket; empty TaskType/StationId means
 // no filter on that dimension.
@@ -155,10 +178,13 @@ func (s *MemoryStore) Query(_ context.Context, q report.ReportQuery) (report.Thr
 			continue
 		}
 		row := report.Row{
-			Key:               k,
-			Completions:       r.completions,
-			LeaseExpiries:     r.leaseExpiries,
-			WeighCheckDiverts: r.weighCheckDiverts,
+			Key:                 k,
+			Completions:         r.completions,
+			LeaseExpiries:       r.leaseExpiries,
+			WeighCheckDiverts:   r.weighCheckDiverts,
+			PackagesManifested:  r.packagesManifested,
+			PackagesOnTimeToCPT: r.packagesOnTimeToCPT,
+			PackagesLateToCPT:   r.packagesLateToCPT,
 		}
 		if r.completionsWithClaim > 0 {
 			row.AvgClaimToCompleteSeconds = r.totalClaimSeconds / float64(r.completionsWithClaim)

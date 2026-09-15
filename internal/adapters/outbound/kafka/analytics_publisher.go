@@ -14,6 +14,7 @@ import (
 
 	"github.com/claudioed/fulfillment-execution/internal/application/ports"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
+	"github.com/claudioed/fulfillment-execution/internal/domain/task"
 	"github.com/claudioed/fulfillment-execution/internal/observability"
 )
 
@@ -129,7 +130,8 @@ func (p *AnalyticsPublisher) Publish(ctx context.Context, evts ...shared.DomainE
 func inAnalyticsContract(e shared.DomainEvent) bool {
 	switch e.(type) {
 	case shared.TaskCreated, shared.TaskClaimed, shared.LeaseExpired, shared.TaskCompleted, shared.ItemPicked,
-		shared.PackageSealed, shared.WeightDiscrepancyDetected, shared.LabelApplied, shared.PackageDiverted:
+		shared.PackageSealed, shared.WeightDiscrepancyDetected, shared.LabelApplied, shared.PackageDiverted,
+		shared.PackageManifested:
 		return true
 	default:
 		return false
@@ -182,6 +184,44 @@ func (p *AnalyticsPublisher) taskType(ctx context.Context, id shared.TaskId) str
 	return string(t.Type())
 }
 
+// onTimeToCPTFields resolves a PackageManifested event's on-time-to-CPT
+// enrichment: the originating SLAM task's process path/station and whether
+// manifestedAt was on time against that task's CPT. It correlates via
+// TaskRepo.FindByOrderRef — a package carries no TaskId of its own — and
+// picks the SLAM-type task among the order's tasks (a Pick/Pack/Rebin leg
+// for the same order is not the one a manifest event is measured against).
+// found is false (and every other return zero) when no SLAM task can be
+// resolved for orderRef — an edge case that should not happen in practice
+// (every Package descends from a SLAM task by construction) but is handled
+// defensively: the caller skips recording rather than failing the whole
+// publish, mirroring this fleet's fail-soft convention for a best-effort
+// enrichment lookup (see taskType above).
+//
+// The on-time boundary is manifestedAt <= cpt counts as on-time — the
+// deliberate mirror of task.Task.IsCPTMissed's own boundary (now >= cpt
+// counts as missed), so the two predicates are consistent at the instant: a
+// package manifested exactly at CPT is a promise kept (see ADR-0026).
+func (p *AnalyticsPublisher) onTimeToCPTFields(ctx context.Context, orderRef shared.OrderRef, manifestedAt time.Time) (taskType, stationId string, onTime, found bool) {
+	if p.Tasks == nil {
+		return "", "", false, false
+	}
+	tasks, err := p.Tasks.FindByOrderRef(ctx, orderRef)
+	if err != nil {
+		return "", "", false, false
+	}
+	for _, t := range tasks {
+		if t.Type() != task.Slam {
+			continue
+		}
+		station := ""
+		if lease := t.Lease(); lease != nil {
+			station = string(lease.StationId)
+		}
+		return string(t.Type()), station, !manifestedAt.After(t.CPT().Time()), true
+	}
+	return "", "", false, false
+}
+
 // marshalData maps a domain event to its analytics event_type, aggregate-id
 // message key, and snake_case JSON payload. The bool return is false for an
 // event type outside the analytics contract, so Publish can skip it.
@@ -232,6 +272,16 @@ func (p *AnalyticsPublisher) marshalData(ctx context.Context, e shared.DomainEve
 	case shared.PackageDiverted:
 		return "PackageDiverted", string(ev.PackageId), mustMarshal(map[string]any{
 			"package_id": string(ev.PackageId),
+		}), true
+	case shared.PackageManifested:
+		taskType, stationId, onTime, resolved := p.onTimeToCPTFields(ctx, ev.OrderRef, ev.OccurredAt())
+		return "PackageManifested", string(ev.PackageId), mustMarshal(map[string]any{
+			"package_id": string(ev.PackageId),
+			"order_ref":  string(ev.OrderRef),
+			"task_type":  taskType,
+			"station_id": stationId,
+			"on_time":    onTime,
+			"resolved":   resolved,
 		}), true
 	default:
 		return "", "", nil, false

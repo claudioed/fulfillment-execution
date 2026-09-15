@@ -41,6 +41,31 @@ type Row struct {
 	// WeighCheckDiverts is the number of WeightDiscrepancyDetected events
 	// (SLAM weigh-check diversions) in this bucket.
 	WeighCheckDiverts int
+	// PackagesManifested is the number of PackageManifested events (a SLAM
+	// pass — see ADR-0025) in this bucket, attributed to the (task_type,
+	// station_id) of the package's originating SLAM task. This is the
+	// on-time-to-CPT KPI's denominator (companion to order-management
+	// ADR 0014 §6 — see ADR-0026).
+	PackagesManifested int
+	// PackagesOnTimeToCPT is the subset of PackagesManifested whose
+	// manifested_at (the PackageManifested event's occurred_at) was at or
+	// before the originating SLAM task's CPT. The boundary instant counts
+	// as on-time (manifestedAt <= cpt) — the deliberate mirror of
+	// Task.IsCPTMissed's own boundary (now >= cpt counts as missed), so the
+	// two predicates agree at the instant: manifesting exactly at CPT is a
+	// promise kept, not broken.
+	PackagesOnTimeToCPT int
+	// PackagesLateToCPT is the complement of PackagesOnTimeToCPT within
+	// PackagesManifested (manifestedAt > cpt). PackagesOnTimeToCPT +
+	// PackagesLateToCPT always equals PackagesManifested.
+	//
+	// The on-time-to-CPT rate itself is NOT stored — like every other rate
+	// in this report (e.g. lease-expiry rate, weigh-check divert rate), it
+	// is derived by the caller from the raw counts
+	// (PackagesOnTimeToCPT / PackagesManifested) rather than precomputed
+	// here, so the read model never has to reconcile a stored percentage
+	// against its own inputs.
+	PackagesLateToCPT int
 }
 
 // ThroughputReport is the full result of a report query: the matching rows.

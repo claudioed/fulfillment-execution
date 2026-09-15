@@ -148,3 +148,76 @@ func TestFreshnessLag_EmptyStore(t *testing.T) {
 		t.Fatalf("empty-store lag = %v, want 0", lag)
 	}
 }
+
+// TestPostgresProjectionAndReport_OnTimeToCPT_RoundTrip proves the
+// on-time-to-CPT columns (ADR-0026, migration 0002) round-trip for real
+// against a live Postgres: packages_manifested/packages_on_time_cpt/
+// packages_late_cpt accumulate correctly across on-time and late
+// manifests, idempotently on eventId, on the SAME (task_type, station_id,
+// hour_bucket) grain the existing rollup uses.
+func TestPostgresProjectionAndReport_OnTimeToCPT_RoundTrip(t *testing.T) {
+	url := requireAnalyticsURL(t)
+	migrateAnalytics(t, url)
+
+	pool, err := analyticsstore.NewPool(context.Background(), url)
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	ctx := context.Background()
+	base := time.Now().UTC().Truncate(time.Hour)
+	taskType := "SLAM-INT"
+	station := "st-ontime-int-" + time.Now().Format("150405.000000000")
+	t.Cleanup(func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM throughput_rollup WHERE station_id = $1`, station)
+	})
+
+	proj := analyticsstore.NewPostgresProjection(pool)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+	}
+
+	// Two on-time, one late, applied twice with the SAME event ids
+	// (duplicate delivery): idempotent, so counts must reflect one logical
+	// occurrence each.
+	apply := func() {
+		must(proj.ApplyPackageManifested(ctx, "int-manifest-1-"+station, taskType, station, base, true))
+		must(proj.ApplyPackageManifested(ctx, "int-manifest-2-"+station, taskType, station, base.Add(time.Minute), true))
+		must(proj.ApplyPackageManifested(ctx, "int-manifest-3-"+station, taskType, station, base.Add(2*time.Minute), false))
+	}
+	apply()
+	apply()
+
+	rdr := analyticsstore.NewPostgresReport(pool)
+	rep, err := rdr.Query(ctx, report.ReportQuery{
+		From:        base.Add(-time.Hour),
+		To:          base.Add(time.Hour),
+		StationId:   station,
+		Granularity: report.GranularityHour,
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rep.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1 (station=%s)", len(rep.Rows), station)
+	}
+	row := rep.Rows[0]
+	if row.PackagesManifested != 3 {
+		t.Errorf("PackagesManifested = %d, want 3 (idempotent)", row.PackagesManifested)
+	}
+	if row.PackagesOnTimeToCPT != 2 {
+		t.Errorf("PackagesOnTimeToCPT = %d, want 2", row.PackagesOnTimeToCPT)
+	}
+	if row.PackagesLateToCPT != 1 {
+		t.Errorf("PackagesLateToCPT = %d, want 1", row.PackagesLateToCPT)
+	}
+	// Existing columns from the same events (none applied here) must stay
+	// at their zero default — additive migration, no cross-contamination.
+	if row.Completions != 0 {
+		t.Errorf("Completions = %d, want 0 (no TaskCompleted applied in this test)", row.Completions)
+	}
+}

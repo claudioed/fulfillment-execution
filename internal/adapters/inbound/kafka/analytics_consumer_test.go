@@ -18,6 +18,7 @@ type call struct {
 	taskType  string
 	stationId string
 	at        time.Time
+	onTime    bool
 }
 
 // fakeProjection records the calls the consumer makes so a test can assert
@@ -27,19 +28,23 @@ type fakeProjection struct {
 }
 
 func (f *fakeProjection) ApplyTaskClaimed(_ context.Context, eventId, taskId, taskType, stationId string, at time.Time) error {
-	f.calls = append(f.calls, call{"claimed", eventId, taskId, taskType, stationId, at})
+	f.calls = append(f.calls, call{method: "claimed", eventId: eventId, taskId: taskId, taskType: taskType, stationId: stationId, at: at})
 	return nil
 }
 func (f *fakeProjection) ApplyTaskCompleted(_ context.Context, eventId, taskId, taskType, stationId string, at time.Time) error {
-	f.calls = append(f.calls, call{"completed", eventId, taskId, taskType, stationId, at})
+	f.calls = append(f.calls, call{method: "completed", eventId: eventId, taskId: taskId, taskType: taskType, stationId: stationId, at: at})
 	return nil
 }
 func (f *fakeProjection) ApplyLeaseExpired(_ context.Context, eventId, taskId, taskType, stationId string, at time.Time) error {
-	f.calls = append(f.calls, call{"lease", eventId, taskId, taskType, stationId, at})
+	f.calls = append(f.calls, call{method: "lease", eventId: eventId, taskId: taskId, taskType: taskType, stationId: stationId, at: at})
 	return nil
 }
 func (f *fakeProjection) ApplyWeightDiscrepancy(_ context.Context, eventId, taskType, stationId string, at time.Time) error {
-	f.calls = append(f.calls, call{"divert", eventId, "", taskType, stationId, at})
+	f.calls = append(f.calls, call{method: "divert", eventId: eventId, taskType: taskType, stationId: stationId, at: at})
+	return nil
+}
+func (f *fakeProjection) ApplyPackageManifested(_ context.Context, eventId, taskType, stationId string, at time.Time, onTime bool) error {
+	f.calls = append(f.calls, call{method: "manifested", eventId: eventId, taskType: taskType, stationId: stationId, at: at, onTime: onTime})
 	return nil
 }
 
@@ -92,6 +97,7 @@ func TestAnalyticsConsumer_RoutesEachEventType(t *testing.T) {
 		{"completed", "TaskCompleted", map[string]any{"task_id": "T1", "station_id": "st1"}, "completed"},
 		{"lease", "LeaseExpired", map[string]any{"task_id": "T1"}, "lease"},
 		{"divert", "WeightDiscrepancyDetected", map[string]any{"package_id": "P1"}, "divert"},
+		{"manifested", "PackageManifested", map[string]any{"package_id": "P1", "order_ref": "O1", "task_type": "SLAM", "station_id": "st1", "on_time": true, "resolved": true}, "manifested"},
 	}
 
 	for _, tt := range tests {
@@ -150,5 +156,76 @@ func TestAnalyticsConsumer_IgnoresUnknownEventType(t *testing.T) {
 	// later contract change could reprocess it.
 	if processed.seen["e1"] {
 		t.Error("non-projecting event should not be marked processed")
+	}
+}
+
+// TestAnalyticsConsumer_PackageManifested_SkipsWhenUnresolved asserts that a
+// PackageManifested envelope whose publisher-side enrichment could not
+// correlate an originating SLAM task (resolved=false) makes NO projection
+// call — the fail-soft/skip-recording convention ADR-0026 mandates for this
+// edge case — while still being marked processed, so a redelivery of the
+// same eventId is a no-op rather than being retried forever.
+func TestAnalyticsConsumer_PackageManifested_SkipsWhenUnresolved(t *testing.T) {
+	proj := &fakeProjection{}
+	processed := newFakeProcessed()
+	c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: processed, Logger: slog.Default()}
+
+	raw := envelope(t, "unresolved-1", "PackageManifested", time.Now(), map[string]any{
+		"package_id": "P1", "order_ref": "O1", "resolved": false,
+	})
+	if err := c.HandleMessage(context.Background(), raw); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if len(proj.calls) != 0 {
+		t.Fatalf("expected unresolved PackageManifested to make no projection call, got %d", len(proj.calls))
+	}
+	if !processed.seen["unresolved-1"] {
+		t.Error("unresolved PackageManifested should still be marked processed (idempotency on redelivery)")
+	}
+}
+
+// TestAnalyticsConsumer_PackageManifested_RoutesOnTimeVerdict asserts the
+// consumer forwards the publisher's on_time verdict verbatim — it performs
+// no CPT comparison of its own (see ADR-0026) — for both the on-time and
+// late cases, including the exact-at-CPT boundary the publisher is
+// responsible for resolving as on-time.
+func TestAnalyticsConsumer_PackageManifested_RoutesOnTimeVerdict(t *testing.T) {
+	at := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name       string
+		onTime     bool
+		wantOnTime bool
+	}{
+		{"on time (including exactly-at-CPT, resolved upstream)", true, true},
+		{"late", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			proj := &fakeProjection{}
+			processed := newFakeProcessed()
+			c := &inboundkafka.AnalyticsConsumer{Projection: proj, Processed: processed, Logger: slog.Default()}
+
+			raw := envelope(t, "e-"+tt.name, "PackageManifested", at, map[string]any{
+				"package_id": "P1", "order_ref": "O1", "task_type": "SLAM", "station_id": "st1",
+				"on_time": tt.onTime, "resolved": true,
+			})
+			if err := c.HandleMessage(context.Background(), raw); err != nil {
+				t.Fatalf("HandleMessage: %v", err)
+			}
+			if len(proj.calls) != 1 {
+				t.Fatalf("calls = %d, want 1", len(proj.calls))
+			}
+			if proj.calls[0].method != "manifested" {
+				t.Errorf("method = %q, want manifested", proj.calls[0].method)
+			}
+			if proj.calls[0].onTime != tt.wantOnTime {
+				t.Errorf("onTime = %v, want %v", proj.calls[0].onTime, tt.wantOnTime)
+			}
+			if proj.calls[0].taskType != "SLAM" {
+				t.Errorf("taskType = %q, want SLAM", proj.calls[0].taskType)
+			}
+		})
 	}
 }

@@ -30,6 +30,15 @@ type throughputRowDTO struct {
 	AvgClaimToCompleteSeconds float64 `json:"avgClaimToCompleteSeconds"`
 	LeaseExpiries             int     `json:"leaseExpiries"`
 	WeighCheckDiverts         int     `json:"weighCheckDiverts"`
+	// PackagesManifested/PackagesOnTimeToCPT/PackagesLateToCPT are the
+	// on-time-to-CPT KPI's raw counts (ADR-0026, companion to
+	// order-management ADR 0014 §6). The rate is derived by the caller
+	// (PackagesOnTimeToCPT / PackagesManifested), matching this DTO's
+	// existing convention of shipping raw counts rather than a precomputed
+	// percentage.
+	PackagesManifested  int `json:"packagesManifested"`
+	PackagesOnTimeToCPT int `json:"packagesOnTimeToCPT"`
+	PackagesLateToCPT   int `json:"packagesLateToCPT"`
 }
 
 // throughputReportDTO is the wire shape of a throughput report response.
@@ -88,6 +97,9 @@ func (h *ReportsHandlers) GetThroughput(w http.ResponseWriter, r *http.Request) 
 			AvgClaimToCompleteSeconds: row.AvgClaimToCompleteSeconds,
 			LeaseExpiries:             row.LeaseExpiries,
 			WeighCheckDiverts:         row.WeighCheckDiverts,
+			PackagesManifested:        row.PackagesManifested,
+			PackagesOnTimeToCPT:       row.PackagesOnTimeToCPT,
+			PackagesLateToCPT:         row.PackagesLateToCPT,
 		})
 	}
 	writeJSON(w, http.StatusOK, dto)
