@@ -83,25 +83,29 @@ per service via `KAFKA_BROKERS`.
 
 ## Events published
 
-All nine domain events are in the catalogue. **Only `TaskCompleted` is
-actually on the wire today** — the rest are documented as the intended
-contract and are in-process only, exactly as each message's own description in
-`asyncapi.yaml` states.
+All eleven domain events are in the catalogue. **`TaskCompleted`,
+`TaskCPTMissed`, and `PackageManifested` are actually on the wire today**
+(the latter two added by ADR-0025) — the rest are documented as the
+intended contract and are in-process only, exactly as each message's own
+description in `asyncapi.yaml` states.
 
 | Event | `type` suffix | `data` fields | On the wire today? |
 | --- | --- | --- | --- |
 | `TaskCreated` | `task.TaskCreated` | `taskId` | No |
 | `TaskClaimed` | `task.TaskClaimed` | `taskId`, `stationId` | No |
 | `LeaseExpired` | `task.LeaseExpired` | `taskId` | No |
-| **`TaskCompleted`** | `task.TaskCompleted` | `taskId`, `stationId`, `workUnitId` | **Yes** |
+| **`TaskCompleted`** | `task.TaskCompleted` | `taskId`, `stationId`, `workUnitId`, `associateId`, `durationSeconds`, `taskType` | **Yes** |
 | `ItemPicked` | `task.ItemPicked` | `taskId` | No — and not raised by any use case either |
 | `PackageSealed` | `package.PackageSealed` | `packageId` | No |
 | `WeightDiscrepancyDetected` | `package.WeightDiscrepancyDetected` | `packageId`, `expectedWeight`, `actualWeight` | No |
 | `LabelApplied` | `package.LabelApplied` | `packageId` | No |
 | `PackageDiverted` | `package.PackageDiverted` | `packageId` | No |
+| **`TaskCPTMissed`** | `task.TaskCPTMissed` | `taskId`, `orderRef`, `taskType`, `cpt` | **Yes** (ADR-0025) |
+| **`PackageManifested`** | `package.PackageManifested` | `packageId`, `orderRef` | **Yes** (ADR-0025) |
 
 `expectedWeight` and `actualWeight` are `number` / `format: double`, in
-kilograms in every example. Everything else is a string.
+kilograms in every example. Everything else is a string, except `cpt`
+(RFC 3339 date-time).
 
 ### `TaskCompleted` and the `workUnitId` enrichment
 
@@ -111,6 +115,28 @@ up through `ports.TaskRepo` and reads `OrderRef()` — which was populated from
 `WorkReleased.data.work_unit_id` when the task was created. So the value
 Work Planning gets back is exactly the one it sent, and it can call
 `RecordCompletion(workUnitId)` directly.
+
+### `TaskCPTMissed` and `PackageManifested` — the promise feedback loop (ADR-0025)
+
+These two events are the fulfillment-execution half of order-management
+ADR 0014 §5's promise feedback loop: order-management's `RepromiseOrder`
+consumer (a separate, later piece of work) reacts to them to recompute —
+and, if it moved, re-promise — the affected shipment group's delivery
+date. Unlike `TaskCompleted`, neither needs a repo-lookup enrichment:
+every field on the wire comes straight off the domain event.
+
+`TaskCPTMissed` is raised by the Clock-driven CPT-missed sweep (`POST
+/tasks/sweep-cpt-misses`) for a task still open (Pending or Claimed) at
+or past its CPT, and **re-fires on every sweep pass** for as long as the
+task stays overdue — there is no per-task "already reported" state here.
+order-management's ADR 0014 §5 explicitly designs its `RepromiseOrder`
+consumer to be idempotent on `(orderId, sourceEventId)` because of this,
+so a consumer of this event must dedupe on its own.
+
+`PackageManifested` is raised alongside `LabelApplied` — additively,
+never in its place — when a package passes its SLAM weigh-check. A
+diverted package (weight outside tolerance) was **not** manifested and
+does not raise this event.
 
 ## Events consumed
 

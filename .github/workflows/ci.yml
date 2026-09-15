@@ -124,10 +124,11 @@ jobs:
         run: go test -tags=integration ./... -race -count=1
 
   # Fast, BLOCKING test-quality sensor: runs on every push/PR.
-  # Subset picked by measurement — ./internal/domain/task holds 15 of the
-  # domain layer's 31 mutants (the largest of any single package) and covers
-  # the claim / lease / at-most-once lifecycle, this context's behavioural
-  # core. Measured locally: 15 killed, 0 lived, efficacy 100.00% in ~1 min.
+  # Subset picked by measurement — ./internal/domain/task holds 16 of the
+  # domain layer's mutants (the largest of any single package) and covers
+  # the claim / lease / at-most-once / CPT-missed (ADR-0025) lifecycle,
+  # this context's behavioural core. Measured locally: 16 killed, 0 lived,
+  # efficacy 100.00% in ~1 min.
   # Thresholds come from .gremlins.yaml, so a drop in mutation score fails
   # the build rather than just printing a number.
   # ============================================================

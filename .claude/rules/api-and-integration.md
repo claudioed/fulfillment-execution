@@ -15,6 +15,7 @@
 - GET  /queues/{taskType}/depth               -> GetQueueDepth
 - GET  /capacity/{capability}                 -> GetInstalledCapacity (ADR-0018)
 - POST /tasks/expire-leases                   -> ExpireLeases
+- POST /tasks/sweep-cpt-misses                 -> SweepCPTMisses (ADR-0025)
 - GET  /healthz
 
 JSON DTOs live in the http adapter; never leak domain structs. Errors are
@@ -69,6 +70,8 @@ below for what's actually on the wire).
 | `WeightDiscrepancyDetected` | `package.WeightDiscrepancyDetected` | `packageId`, `expectedWeight`, `actualWeight` | No |
 | `LabelApplied` | `package.LabelApplied` | `packageId` | No |
 | `PackageDiverted` | `package.PackageDiverted` | `packageId` | No |
+| `TaskCPTMissed` | n/a (not yet in the AsyncAPI CloudEvents catalogue) | `task_id`, `order_ref`, `task_type`, `cpt` | **Yes** (ADR-0025) |
+| `PackageManifested` | n/a (not yet in the AsyncAPI CloudEvents catalogue) | `package_id`, `order_ref` | **Yes** (ADR-0025) |
 
 `workUnitId` on `TaskCompleted` is what makes the feedback loop to Work
 Planning work: the publisher looks the task back up through `ports.TaskRepo`

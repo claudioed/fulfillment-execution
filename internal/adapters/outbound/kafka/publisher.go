@@ -1,8 +1,10 @@
 // Package kafka provides the outbound adapter that publishes
 // fulfillment-execution domain events onto Kafka, satisfying
-// ports.EventPublisher. It currently forwards TaskCompleted only, enriching
-// it with the completed Task's OrderRef (looked up via TaskRepo, since the
-// domain event itself carries only TaskId/StationId) — the same
+// ports.EventPublisher. It forwards TaskCompleted, TaskCPTMissed, and
+// PackageManifested — every other event type is not yet part of the
+// published integration contract and is skipped. TaskCompleted is
+// enriched with the completed Task's OrderRef (looked up via TaskRepo,
+// since the domain event itself carries only TaskId/StationId) — the same
 // repo-lookup-enrichment pattern inventory-storage's Kafka publisher uses
 // for ReservationRevoked. It also enriches TaskCompleted with the
 // completing associate's identity, the task's duration, and the task's own
@@ -10,6 +12,9 @@
 // Task's ClaimedAt timestamp, and the already-loaded Task's Type()
 // respectively (see ADR-0014, ADR-0023) — inputs the labor-performance
 // bounded context needs and that this service is the sole owner of.
+// TaskCPTMissed and PackageManifested need no repo enrichment: both carry
+// every field their wire payload needs directly on the domain event
+// itself (see ADR-0025).
 package kafka
 
 import (
@@ -62,6 +67,50 @@ type TaskCompletedData struct {
 	TaskType        string `json:"task_type,omitempty"`
 }
 
+// TaskCPTMissedEnvelope is the CloudEvents-like wrapper for a published
+// TaskCPTMissed event (ADR-0025) — the fulfillment-execution half of
+// order-management ADR 0014 §5's promise feedback loop.
+type TaskCPTMissedEnvelope struct {
+	EventId    string            `json:"event_id"`
+	EventType  string            `json:"event_type"`
+	OccurredAt time.Time         `json:"occurred_at"`
+	Source     string            `json:"source"`
+	Data       TaskCPTMissedData `json:"data"`
+}
+
+// TaskCPTMissedData is the payload of a published TaskCPTMissed event: a
+// task still open (Pending or Claimed) past its CPT deadline. OrderRef is
+// what order-management's RepromiseOrder consumer (ADR 0014 §5) keys its
+// recompute on; TaskType and Cpt let it reason about which leg missed and
+// how late without a repo lookup back into this service. Every field
+// comes straight off the domain event — no repo enrichment needed (unlike
+// TaskCompleted).
+type TaskCPTMissedData struct {
+	TaskId   string    `json:"task_id"`
+	OrderRef string    `json:"order_ref"`
+	TaskType string    `json:"task_type,omitempty"`
+	Cpt      time.Time `json:"cpt"`
+}
+
+// PackageManifestedEnvelope is the CloudEvents-like wrapper for a
+// published PackageManifested event (ADR-0025) — the SLAM-pass half of
+// order-management ADR 0014 §5's promise feedback loop.
+type PackageManifestedEnvelope struct {
+	EventId    string                `json:"event_id"`
+	EventType  string                `json:"event_type"`
+	OccurredAt time.Time             `json:"occurred_at"`
+	Source     string                `json:"source"`
+	Data       PackageManifestedData `json:"data"`
+}
+
+// PackageManifestedData is the payload of a published PackageManifested
+// event: a package that passed its SLAM weigh-check. OrderRef is what
+// order-management's RepromiseOrder consumer keys its recompute on.
+type PackageManifestedData struct {
+	PackageId string `json:"package_id"`
+	OrderRef  string `json:"order_ref"`
+}
+
 // Writer is the subset of *kafkago.Writer the Publisher needs, so tests can
 // substitute a fake without a live broker.
 type Writer interface {
@@ -95,12 +144,15 @@ func NewPublisherWithWriter(w Writer, tasks ports.TaskRepo, stations ports.Stati
 	return &Publisher{Writer: w, Tasks: tasks, Stations: stations, NewId: newId}
 }
 
-// Encode builds the wire form of every TaskCompleted event in evts — the
-// envelope enriched with the completed Task's OrderRef, the completing
-// associate's identity and the task's duration — WITHOUT sending it.
-// Other event types are not part of the integration contract and yield
-// nothing. The repo lookups happen here, so when Encode runs inside a use
-// case's transaction (the outbox path) they see the just-saved rows.
+// Encode builds the wire form of every TaskCompleted, TaskCPTMissed, and
+// PackageManifested event in evts — WITHOUT sending it. TaskCompleted's
+// envelope is enriched with the completed Task's OrderRef, the completing
+// associate's identity and the task's duration; TaskCPTMissed and
+// PackageManifested need no enrichment, every field they carry on the wire
+// comes straight off the domain event (see ADR-0025). Other event types
+// are not part of the integration contract and yield nothing. The repo
+// lookups (TaskCompleted only) happen here, so when Encode runs inside a
+// use case's transaction (the outbox path) they see the just-saved rows.
 //
 // The W3C trace context of whatever span is active on ctx is injected
 // into each message's headers, so the consumer's span becomes a child of
@@ -109,63 +161,120 @@ func NewPublisherWithWriter(w Writer, tasks ports.TaskRepo, stations ports.Stati
 func (p *Publisher) Encode(ctx context.Context, evts ...shared.DomainEvent) ([]Encoded, error) {
 	var out []Encoded
 	for _, e := range evts {
-		tc, ok := e.(shared.TaskCompleted)
-		if !ok {
+		switch ev := e.(type) {
+		case shared.TaskCompleted:
+			enc, err := p.encodeTaskCompleted(ctx, ev)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, enc)
+		case shared.TaskCPTMissed:
+			enc, err := p.encodeTaskCPTMissed(ev)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, enc)
+		case shared.PackageManifested:
+			enc, err := p.encodePackageManifested(ev)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, enc)
+		default:
 			continue
 		}
-
-		t, err := p.Tasks.FindById(ctx, tc.TaskId)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: lookup task %s for enrichment: %w", tc.TaskId, err)
-		}
-		var workUnitId string
-		var durationSeconds int64
-		var taskType string
-		if t != nil {
-			workUnitId = string(t.OrderRef())
-			if claimedAt := t.ClaimedAt(); claimedAt != nil {
-				durationSeconds = int64(tc.OccurredAt().Sub(*claimedAt).Seconds())
-			}
-			taskType = string(t.Type())
-		}
-
-		associateId, err := p.associateId(ctx, tc.StationId)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: lookup station %s for enrichment: %w", tc.StationId, err)
-		}
-
-		env := Envelope{
-			EventId:    p.NewId(),
-			EventType:  "TaskCompleted",
-			OccurredAt: tc.OccurredAt(),
-			Source:     "fulfillment-execution",
-			Data: TaskCompletedData{
-				TaskId:          string(tc.TaskId),
-				StationId:       string(tc.StationId),
-				WorkUnitId:      workUnitId,
-				AssociateId:     associateId,
-				DurationSeconds: durationSeconds,
-				TaskType:        taskType,
-			},
-		}
-		payload, err := json.Marshal(env)
-		if err != nil {
-			return nil, fmt.Errorf("kafka: marshal envelope: %w", err)
-		}
-		enc := Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(tc.TaskId), Value: payload}
-		observability.InjectKafkaTrace(ctx, &enc.Headers)
-		out = append(out, enc)
+		observability.InjectKafkaTrace(ctx, &out[len(out)-1].Headers)
 	}
 	return out, nil
 }
 
-// Publish forwards every TaskCompleted event in evts onto Kafka, enriched
-// with the completed Task's OrderRef, the completing associate's identity,
-// and the task's duration. Each message is encoded and written inside its
-// own "kafka.publish <topic>" producer span.
+func (p *Publisher) encodeTaskCompleted(ctx context.Context, tc shared.TaskCompleted) (Encoded, error) {
+	t, err := p.Tasks.FindById(ctx, tc.TaskId)
+	if err != nil {
+		return Encoded{}, fmt.Errorf("kafka: lookup task %s for enrichment: %w", tc.TaskId, err)
+	}
+	var workUnitId string
+	var durationSeconds int64
+	var taskType string
+	if t != nil {
+		workUnitId = string(t.OrderRef())
+		if claimedAt := t.ClaimedAt(); claimedAt != nil {
+			durationSeconds = int64(tc.OccurredAt().Sub(*claimedAt).Seconds())
+		}
+		taskType = string(t.Type())
+	}
+
+	associateId, err := p.associateId(ctx, tc.StationId)
+	if err != nil {
+		return Encoded{}, fmt.Errorf("kafka: lookup station %s for enrichment: %w", tc.StationId, err)
+	}
+
+	env := Envelope{
+		EventId:    p.NewId(),
+		EventType:  "TaskCompleted",
+		OccurredAt: tc.OccurredAt(),
+		Source:     "fulfillment-execution",
+		Data: TaskCompletedData{
+			TaskId:          string(tc.TaskId),
+			StationId:       string(tc.StationId),
+			WorkUnitId:      workUnitId,
+			AssociateId:     associateId,
+			DurationSeconds: durationSeconds,
+			TaskType:        taskType,
+		},
+	}
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return Encoded{}, fmt.Errorf("kafka: marshal envelope: %w", err)
+	}
+	return Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(tc.TaskId), Value: payload}, nil
+}
+
+func (p *Publisher) encodeTaskCPTMissed(ev shared.TaskCPTMissed) (Encoded, error) {
+	env := TaskCPTMissedEnvelope{
+		EventId:    p.NewId(),
+		EventType:  "TaskCPTMissed",
+		OccurredAt: ev.OccurredAt(),
+		Source:     "fulfillment-execution",
+		Data: TaskCPTMissedData{
+			TaskId:   string(ev.TaskId),
+			OrderRef: string(ev.OrderRef),
+			TaskType: ev.TaskType,
+			Cpt:      ev.CPT,
+		},
+	}
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return Encoded{}, fmt.Errorf("kafka: marshal TaskCPTMissed envelope: %w", err)
+	}
+	return Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(ev.TaskId), Value: payload}, nil
+}
+
+func (p *Publisher) encodePackageManifested(ev shared.PackageManifested) (Encoded, error) {
+	env := PackageManifestedEnvelope{
+		EventId:    p.NewId(),
+		EventType:  "PackageManifested",
+		OccurredAt: ev.OccurredAt(),
+		Source:     "fulfillment-execution",
+		Data: PackageManifestedData{
+			PackageId: string(ev.PackageId),
+			OrderRef:  string(ev.OrderRef),
+		},
+	}
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return Encoded{}, fmt.Errorf("kafka: marshal PackageManifested envelope: %w", err)
+	}
+	return Encoded{Topic: Topic, EventType: env.EventType, Key: []byte(ev.PackageId), Value: payload}, nil
+}
+
+// Publish forwards every TaskCompleted, TaskCPTMissed, and
+// PackageManifested event in evts onto Kafka. Each message is encoded and
+// written inside its own "kafka.publish <topic>" producer span. Other
+// event types are skipped.
 func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) error {
 	for _, e := range evts {
-		if _, ok := e.(shared.TaskCompleted); !ok {
+		if !inIntegrationContract(e) {
 			continue
 		}
 		if err := p.publishOne(ctx, e); err != nil {
@@ -173,6 +282,17 @@ func (p *Publisher) Publish(ctx context.Context, evts ...shared.DomainEvent) err
 		}
 	}
 	return nil
+}
+
+// inIntegrationContract reports whether Encode knows how to turn e into a
+// wire message, so Publish can skip a foreign event before opening a span.
+func inIntegrationContract(e shared.DomainEvent) bool {
+	switch e.(type) {
+	case shared.TaskCompleted, shared.TaskCPTMissed, shared.PackageManifested:
+		return true
+	default:
+		return false
+	}
 }
 
 // publishOne encodes and writes one event inside a producer span, so the
