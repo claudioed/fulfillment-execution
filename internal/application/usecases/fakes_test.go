@@ -24,6 +24,7 @@ type errTaskRepo struct {
 	failFindById            bool
 	failFindClaimableByType bool
 	failFindAllClaimed      bool
+	failFindOpenPastCPT     bool
 }
 
 func newErrTaskRepo() *errTaskRepo {
@@ -56,6 +57,13 @@ func (r *errTaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) 
 		return nil, errFake
 	}
 	return r.TaskRepo.FindAllClaimed(ctx)
+}
+
+func (r *errTaskRepo) FindOpenPastCPT(ctx context.Context, now time.Time) ([]*task.Task, error) {
+	if r.failFindOpenPastCPT {
+		return nil, errFake
+	}
+	return r.TaskRepo.FindOpenPastCPT(ctx, now)
 }
 
 // errStationRepo wraps a memory.StationRepo, letting individual methods be

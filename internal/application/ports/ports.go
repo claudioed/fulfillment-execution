@@ -25,6 +25,12 @@ type TaskRepo interface {
 	// FindAllClaimed returns every task currently in the Claimed state, for
 	// the lease-expiry sweep.
 	FindAllClaimed(ctx context.Context) ([]*task.Task, error)
+	// FindOpenPastCPT returns every task still open (Pending or Claimed —
+	// i.e. not Completed, see task.Task.IsCPTMissed) whose CPT is at or
+	// before now, for the CPT-missed sweep (ADR-0025). Order is
+	// unspecified; a sweep with nothing overdue returns an empty slice,
+	// not an error.
+	FindOpenPastCPT(ctx context.Context, now time.Time) ([]*task.Task, error)
 	CountByTypeAndStatus(ctx context.Context, taskType task.Type, status task.Status) (int, error)
 	// FindByOrderRef returns every task created for orderRef — a PICK,
 	// PACK, and SLAM leg is typically one each, but a leg may appear more

@@ -63,6 +63,7 @@ func NewRouter(h *Handlers, logger *slog.Logger, opts ...RouterOption) *chi.Mux 
 	r.Get("/queues/{taskType}/depth", h.GetQueueDepthHandler)
 	r.Get("/capacity/{capability}", h.GetInstalledCapacityHandler)
 	r.Post("/tasks/expire-leases", h.PostExpireLeases)
+	r.Post("/tasks/sweep-cpt-misses", h.PostSweepCPTMisses)
 	r.Post("/rebin/arrivals", h.PostArriveAtRebin)
 
 	return r

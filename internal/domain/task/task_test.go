@@ -415,3 +415,61 @@ func TestClaim_RebinTaskFollowsIdenticalRulesToOtherTypes(t *testing.T) {
 		t.Fatalf("expected Completed, got %s", tk.Status())
 	}
 }
+
+// IsCPTMissed is the domain-logic core of the CPT-missed sweep (see
+// usecases.SweepCPTMisses / ADR-0025). Boundary is explicit and pinned by
+// this test: a task due EXACTLY at now counts as missed (mirrors
+// Lease.expired's own not-before boundary), so a sweep tick landing
+// precisely on the CPT catches it immediately rather than waiting a tick.
+func TestIsCPTMissed_PendingTaskPastCPT(t *testing.T) {
+	tk := task.New(shared.TaskId("t1"), task.Pick, shared.NewCPT(now), shared.OrderRef("order-1"), shared.NewCapabilitySet("pick"), false, false)
+	if !tk.IsCPTMissed(now.Add(time.Second)) {
+		t.Fatalf("expected a Pending task past its CPT to be missed")
+	}
+}
+
+// The boundary itself: due EXACTLY at now is missed, not merely "about to
+// be missed". This is the precise off-by-one a mutant on the comparison
+// operator would flip.
+func TestIsCPTMissed_ExactlyAtCPT_CountsAsMissed(t *testing.T) {
+	tk := task.New(shared.TaskId("t1"), task.Pick, shared.NewCPT(now), shared.OrderRef("order-1"), shared.NewCapabilitySet("pick"), false, false)
+	if !tk.IsCPTMissed(now) {
+		t.Fatalf("expected a task due exactly at now to count as CPT-missed")
+	}
+}
+
+// One instant before CPT: not yet missed.
+func TestIsCPTMissed_BeforeCPT_NotMissed(t *testing.T) {
+	tk := task.New(shared.TaskId("t1"), task.Pick, shared.NewCPT(now), shared.OrderRef("order-1"), shared.NewCapabilitySet("pick"), false, false)
+	if tk.IsCPTMissed(now.Add(-time.Nanosecond)) {
+		t.Fatalf("expected a task one nanosecond before its CPT to not be missed yet")
+	}
+}
+
+// A Claimed (still-open, unconfirmed) task past its CPT is also missed —
+// IsCPTMissed treats Pending and Claimed identically as "still open".
+func TestIsCPTMissed_ClaimedTaskPastCPT(t *testing.T) {
+	tk := task.New(shared.TaskId("t1"), task.Pick, shared.NewCPT(now), shared.OrderRef("order-1"), shared.NewCapabilitySet("pick"), false, false)
+	if err := tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now.Add(-time.Hour), time.Hour); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if !tk.IsCPTMissed(now) {
+		t.Fatalf("expected a Claimed task past its CPT to be missed")
+	}
+}
+
+// A Completed task is NEVER reported as CPT-missed, no matter how far past
+// its CPT "now" is — completion, not the deadline alone, is what ends the
+// sweep's interest in a task (mirrors ExpireLeaseIfDue's Completed guard).
+func TestIsCPTMissed_CompletedTaskNeverMissed(t *testing.T) {
+	tk := task.New(shared.TaskId("t1"), task.Pick, shared.NewCPT(now), shared.OrderRef("order-1"), shared.NewCapabilitySet("pick"), false, false)
+	if err := tk.Claim(shared.StationId("s1"), shared.NewCapabilitySet("pick"), now.Add(-time.Hour), 2*time.Hour); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := tk.Complete(shared.StationId("s1"), now); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	if tk.IsCPTMissed(now.Add(24 * time.Hour)) {
+		t.Fatalf("expected a Completed task to never be reported as CPT-missed")
+	}
+}

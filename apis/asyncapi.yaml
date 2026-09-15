@@ -27,11 +27,16 @@ info:
 
 
     This document is the full domain-event catalog for the bounded context.
-    Of these, only **TaskCompleted** is currently wired to the outbound Kafka
-    adapter (topic `warehouse.fulfillment.events`, enriched with `work_unit_id`,
-    `associate_id`, `duration_seconds`, and `task_type`)
-    per the service's Cross-service Integration contract — see each message's
-    description for its current publication status.
+    Of these, **TaskCompleted**, **TaskCPTMissed**, and
+    **PackageManifested** are currently wired to the outbound Kafka
+    adapter (topic `warehouse.fulfillment.events`) — `TaskCompleted`
+    enriched with `work_unit_id`, `associate_id`, `duration_seconds`, and
+    `task_type`; `TaskCPTMissed` and `PackageManifested` (ADR-0025, the
+    fulfillment-execution half of order-management ADR 0014 §5's promise
+    feedback loop) need no repo enrichment — every field comes straight off
+    the domain event — per the service's Cross-service Integration
+    contract. See each message's description for its current publication
+    status.
   contact:
     name: Fulfillment Execution Team
     url: https://github.com/claudioed/fulfillment-execution
@@ -47,6 +52,12 @@ tags:
     description: Events raised by the Task aggregate (Pick | Pack | SLAM lifecycle).
   - name: package
     description: Events raised by the Package aggregate (Pack output and SLAM weigh-check).
+  - name: promise-feedback
+    description: >
+      Events closing the promise feedback loop with order-management (ADR
+      0014 §5, this service's own ADR-0025) — a missed CPT and a completed
+      SLAM pass, both of which order-management's future RepromiseOrder
+      consumer reacts to.
 
 servers:
   production:
@@ -83,6 +94,8 @@ channels:
           - $ref: '#/components/messages/WeightDiscrepancyDetected'
           - $ref: '#/components/messages/LabelApplied'
           - $ref: '#/components/messages/PackageDiverted'
+          - $ref: '#/components/messages/TaskCPTMissed'
+          - $ref: '#/components/messages/PackageManifested'
 
 components:
   messages:
@@ -342,6 +355,90 @@ components:
             datacontenttype: application/json
             data:
               packageId: pkg-1029
+
+    TaskCPTMissed:
+      name: TaskCPTMissed
+      title: Task CPT Missed
+      summary: A task is still open (Pending or Claimed) past its CPT deadline.
+      description: >
+        Raised by the Clock-driven CPT-missed sweep (`POST
+        /tasks/sweep-cpt-misses`, ADR-0025) for a task that is still open
+        (not Completed) at or past its CPT. This is the fulfillment-execution
+        half of order-management ADR 0014 §5's promise feedback loop:
+        order-management's `RepromiseOrder` consumer reacts to this event to
+        recompute — and, if it moved, re-promise — the affected shipment
+        group's delivery date.
+
+
+        **This event re-fires on every sweep pass** for as long as the task
+        remains open past its CPT — there is no per-task "already reported"
+        state. order-management's `RepromiseOrder` is explicitly designed
+        (ADR 0014 §5) to be idempotent on `(orderId, sourceEventId)` because
+        of this; a consumer of this event must dedupe on its own, not
+        assume at-most-once delivery of a distinct fact.
+
+
+        Currently wired to the outbound Kafka adapter, published on topic
+        `warehouse.fulfillment.events`. No repo enrichment is needed — every
+        field comes directly off the domain event.
+      contentType: application/cloudevents+json
+      tags:
+        - name: task
+        - name: promise-feedback
+      payload:
+        $ref: '#/components/schemas/TaskCPTMissedEvent'
+      examples:
+        - name: taskCPTMissed
+          payload:
+            specversion: "1.0"
+            id: 9c0d1e2f-3a4b-4c5d-6e7f-809112233445
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed
+            subject: task-8a1f
+            time: "2026-08-22T18:05:00Z"
+            datacontenttype: application/json
+            data:
+              taskId: task-8a1f
+              orderRef: wu-8a1f
+              taskType: PICK
+              cpt: "2026-08-22T18:00:00Z"
+
+    PackageManifested:
+      name: PackageManifested
+      title: Package Manifested
+      summary: A package passed its SLAM weigh-check (the "SLAM pass").
+      description: >
+        Raised alongside `LabelApplied` — additively, never in its place —
+        when the SLAM weigh-check passes (see `RunSlam`, ADR-0025). A
+        diverted package (weight outside tolerance) was NOT manifested and
+        does not raise this event. This is the SLAM-pass half of
+        order-management ADR 0014 §5's promise feedback loop:
+        `RepromiseOrder` reacts to this event the same way it reacts to
+        `TaskCPTMissed`, keyed by `orderRef`.
+
+
+        Currently wired to the outbound Kafka adapter, published on topic
+        `warehouse.fulfillment.events`. No repo enrichment is needed — every
+        field comes directly off the domain event.
+      contentType: application/cloudevents+json
+      tags:
+        - name: package
+        - name: promise-feedback
+      payload:
+        $ref: '#/components/schemas/PackageManifestedEvent'
+      examples:
+        - name: packageManifested
+          payload:
+            specversion: "1.0"
+            id: ad1e2f3a-4b5c-4d6e-7f80-91223344556a
+            source: /warehouse/fulfillment-execution
+            type: com.warehouse.wes.fulfillment-execution.package.PackageManifested
+            subject: pkg-1029
+            time: "2026-08-22T14:12:00Z"
+            datacontenttype: application/json
+            data:
+              packageId: pkg-1029
+              orderRef: wu-8a1f
 
   schemas:
     CloudEventBase:
@@ -634,3 +731,75 @@ components:
                 packageId:
                   type: string
                   description: Identifier of the diverted package.
+
+    TaskCPTMissedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.task.TaskCPTMissed
+            data:
+              type: object
+              required:
+                - taskId
+                - orderRef
+                - cpt
+              properties:
+                taskId:
+                  type: string
+                  description: Identifier of the task still open past its CPT.
+                orderRef:
+                  type: string
+                  description: >
+                    The task's order reference (carried as order_ref on the
+                    wire), what order-management's RepromiseOrder consumer
+                    (ADR 0014 §5) keys its recompute on.
+                taskType:
+                  type: string
+                  enum:
+                    - PICK
+                    - PACK
+                    - SLAM
+                    - REBIN
+                  description: >
+                    The overdue task's own type (carried as task_type on the
+                    wire), so a consumer can reason about which leg missed
+                    without a repo lookup back into this service.
+                cpt:
+                  type: string
+                  format: date-time
+                  description: The task's CPT deadline that was missed.
+
+    PackageManifestedEvent:
+      allOf:
+        - $ref: '#/components/schemas/CloudEventBase'
+        - type: object
+          required:
+            - type
+            - data
+          properties:
+            type:
+              type: string
+              enum:
+                - com.warehouse.wes.fulfillment-execution.package.PackageManifested
+            data:
+              type: object
+              required:
+                - packageId
+                - orderRef
+              properties:
+                packageId:
+                  type: string
+                  description: Identifier of the manifested (SLAM-passed) package.
+                orderRef:
+                  type: string
+                  description: >
+                    The package's order reference (carried as order_ref on
+                    the wire), what order-management's RepromiseOrder
+                    consumer keys its recompute on.

@@ -251,6 +251,148 @@ func TestExpireLeases_SweepsExpiredClaimsBackToPending(t *testing.T) {
 	}
 }
 
+// --- SweepCPTMisses ---
+
+// A still-Pending task whose CPT has passed raises TaskCPTMissed, carrying
+// the OrderRef/TaskType/CPT order-management's RepromiseOrder (ADR 0014 §5)
+// needs, and never mutates the task's own lifecycle state (unlike
+// ExpireLeases, a CPT miss is a fact reported upstream, not a state
+// transition here).
+func TestSweepCPTMisses_ReportsOverdueOpenTasks(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	tk, _ := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Minute)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+
+	h.clock.Advance(2 * time.Minute)
+
+	sweep := &usecases.SweepCPTMisses{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock}
+	reported, err := sweep.Execute(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reported != 1 {
+		t.Fatalf("expected 1 task reported, got %d", reported)
+	}
+
+	got, _ := h.tasks.FindById(ctx, tk.Id())
+	if got.Status() != task.Pending {
+		t.Fatalf("SweepCPTMisses must not mutate task state, expected Pending, got %s", got.Status())
+	}
+
+	var found *shared.TaskCPTMissed
+	for _, e := range h.publisher.Events() {
+		if m, ok := e.(shared.TaskCPTMissed); ok {
+			found = &m
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a TaskCPTMissed event, got %v", h.publisher.Events())
+	}
+	if found.TaskId != tk.Id() {
+		t.Fatalf("expected TaskId %s, got %s", tk.Id(), found.TaskId)
+	}
+	if found.OrderRef != "order-1" {
+		t.Fatalf("expected OrderRef order-1, got %s", found.OrderRef)
+	}
+	if found.TaskType != string(task.Pick) {
+		t.Fatalf("expected TaskType PICK, got %s", found.TaskType)
+	}
+	if !found.CPT.Equal(epoch.Add(time.Minute)) {
+		t.Fatalf("expected CPT %v, got %v", epoch.Add(time.Minute), found.CPT)
+	}
+}
+
+// A task not yet past its CPT is not reported.
+func TestSweepCPTMisses_IgnoresTasksNotYetDue(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+
+	sweep := &usecases.SweepCPTMisses{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock}
+	reported, err := sweep.Execute(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reported != 0 {
+		t.Fatalf("expected 0 tasks reported, got %d", reported)
+	}
+}
+
+// A Completed task is never reported, regardless of how far past its CPT.
+func TestSweepCPTMisses_IgnoresCompletedTasks(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	tk, _ := create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Minute)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pick")))
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pick)
+	complete := &usecases.CompleteTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock}
+	if err := complete.Execute(ctx, claimed.Id(), "s1"); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	h.clock.Advance(2 * time.Hour)
+	sweep := &usecases.SweepCPTMisses{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock}
+	reported, err := sweep.Execute(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reported != 0 {
+		t.Fatalf("expected 0 tasks reported for a Completed task, got %d", reported)
+	}
+	_ = tk
+}
+
+// Re-fire semantics (ADR-0025, citing order-management ADR 0014 §5's
+// idempotency note): the same still-overdue task is reported on every
+// sweep tick, not just once.
+func TestSweepCPTMisses_RefiresOnEveryTickWhileStillOverdue(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Minute)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	h.clock.Advance(2 * time.Minute)
+
+	sweep := &usecases.SweepCPTMisses{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock}
+	first, err := sweep.Execute(ctx)
+	if err != nil || first != 1 {
+		t.Fatalf("first pass: reported=%d err=%v", first, err)
+	}
+	second, err := sweep.Execute(ctx)
+	if err != nil || second != 1 {
+		t.Fatalf("second pass: expected the still-overdue task to be reported again, reported=%d err=%v", second, err)
+	}
+}
+
+func TestSweepCPTMisses_PropagatesFindOpenPastCPTError(t *testing.T) {
+	h := newHarness()
+	tasks := newErrTaskRepo()
+	tasks.failFindOpenPastCPT = true
+
+	sweep := &usecases.SweepCPTMisses{Tasks: tasks, Publisher: h.publisher, Clock: h.clock}
+	_, err := sweep.Execute(context.Background())
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected FindOpenPastCPT error to propagate, got %v", err)
+	}
+}
+
+func TestSweepCPTMisses_PropagatesPublishError(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pick, shared.NewCPT(epoch.Add(time.Minute)), "order-1", shared.NewCapabilitySet("pick"), false, false)
+	h.clock.Advance(2 * time.Minute)
+
+	sweep := &usecases.SweepCPTMisses{Tasks: h.tasks, Publisher: &errPublisher{fail: true}, Clock: h.clock}
+	_, err := sweep.Execute(ctx)
+	if !errors.Is(err, errFake) {
+		t.Fatalf("expected publish error to propagate, got %v", err)
+	}
+}
+
 func TestRenewLease_ExtendsClaim(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()

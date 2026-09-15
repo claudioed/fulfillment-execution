@@ -72,6 +72,24 @@ func (r *TaskRepo) FindAllClaimed(_ context.Context) ([]*task.Task, error) {
 	return result, nil
 }
 
+// FindOpenPastCPT returns every Pending or Claimed task whose CPT is at or
+// before now, for the CPT-missed sweep (ADR-0025).
+func (r *TaskRepo) FindOpenPastCPT(_ context.Context, now time.Time) ([]*task.Task, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var result []*task.Task
+	for _, t := range r.tasks {
+		if t.IsCPTMissed(now) {
+			result = append(result, t)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Id() < result[j].Id()
+	})
+	return result, nil
+}
+
 func (r *TaskRepo) CountByTypeAndStatus(_ context.Context, taskType task.Type, status task.Status) (int, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

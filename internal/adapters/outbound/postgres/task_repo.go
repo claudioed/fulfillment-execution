@@ -91,6 +91,23 @@ func (r *TaskRepo) FindAllClaimed(ctx context.Context) ([]*task.Task, error) {
 	return scanTasks(rows)
 }
 
+// FindOpenPastCPT returns every Pending or Claimed task whose cpt is at or
+// before now, for the CPT-missed sweep (ADR-0025). A Completed task is
+// never returned regardless of its CPT — mirrors task.Task.IsCPTMissed's
+// own status guard.
+func (r *TaskRepo) FindOpenPastCPT(ctx context.Context, now time.Time) ([]*task.Task, error) {
+	rows, err := querierFrom(ctx, r.pool).Query(ctx, `
+		SELECT id, task_type, status, cpt, order_ref, required_capabilities, lease_station_id, lease_expiry, fragile, gift_wrap, claimed_at
+		FROM tasks
+		WHERE status IN ('PENDING', 'CLAIMED') AND cpt <= $1
+	`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTasks(rows)
+}
+
 func (r *TaskRepo) CountByTypeAndStatus(ctx context.Context, taskType task.Type, status task.Status) (int, error) {
 	var count int
 	err := querierFrom(ctx, r.pool).QueryRow(ctx, `
