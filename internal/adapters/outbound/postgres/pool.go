@@ -21,11 +21,9 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.ConnConfig.Tracer = otelpgx.NewTracer(
-		// Span names become "query <first line of SQL>" rather than the
-		// whole multi-line statement, keeping them readable and bounded.
-		otelpgx.WithTrimSQLInSpanName(),
-	)
+	// Trimmed SQL in span names (e.g. "query SELECT ...") is now otelpgx's
+	// default behavior as of v0.12.0; no option needed.
+	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
