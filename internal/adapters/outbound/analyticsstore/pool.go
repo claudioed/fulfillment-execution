@@ -15,7 +15,9 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())
+	// Trimmed SQL in span names (e.g. "query SELECT ...") is now otelpgx's
+	// default behavior as of v0.12.0; no option needed.
+	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
 	return pgxpool.NewWithConfig(ctx, cfg)
 }
 
@@ -30,7 +32,9 @@ func NewReadOnlyPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, er
 	if err != nil {
 		return nil, err
 	}
-	cfg.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())
+	// Trimmed SQL in span names (e.g. "query SELECT ...") is now otelpgx's
+	// default behavior as of v0.12.0; no option needed.
+	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
 	if cfg.ConnConfig.RuntimeParams == nil {
 		cfg.ConnConfig.RuntimeParams = map[string]string{}
 	}
