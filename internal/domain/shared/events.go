@@ -141,3 +141,51 @@ type OrderConsolidated struct {
 func NewOrderConsolidated(orderRef OrderRef, at time.Time) OrderConsolidated {
 	return OrderConsolidated{base: base{Name: "OrderConsolidated", At: at}, OrderRef: orderRef}
 }
+
+// TaskCPTMissed is raised by the CPT-missed sweep (see
+// usecases.SweepCPTMisses, ADR-0025) for a task still open (Pending or
+// Claimed — see Task.IsCPTMissed) at or past its CPT deadline. OrderRef
+// identifies the affected order/shipment-group for order-management's
+// RepromiseOrder consumer (ADR 0014 §5) to key its recompute on; TaskType
+// and CPT are carried so a future consumer can reason about which leg
+// missed and by how much without a repo lookup back into this service.
+//
+// By design this event RE-FIRES on every sweep pass for as long as the
+// task remains open past its CPT — the sweep does not track "already
+// reported" state (see ADR-0025 and order-management's ADR 0014 §5, which
+// explicitly designs its RepromiseOrder consumer to be idempotent on
+// (orderId, sourceEventId) "because fulfillment-execution's missed-CPT
+// sweep will re-emit on every pass").
+type TaskCPTMissed struct {
+	base
+	TaskId   TaskId
+	OrderRef OrderRef
+	TaskType string
+	CPT      time.Time
+}
+
+func NewTaskCPTMissed(id TaskId, orderRef OrderRef, taskType string, cpt time.Time, at time.Time) TaskCPTMissed {
+	return TaskCPTMissed{
+		base:     base{Name: "TaskCPTMissed", At: at},
+		TaskId:   id,
+		OrderRef: orderRef,
+		TaskType: taskType,
+		CPT:      cpt,
+	}
+}
+
+// PackageManifested is raised alongside LabelApplied when a package passes
+// its SLAM weigh-check (see usecases.RunSlam, ADR-0025) — the "SLAM pass"
+// half of order-management ADR 0014 §5's promise feedback loop. A
+// diverted package (weight outside tolerance) was NOT manifested and does
+// not raise this event. OrderRef identifies the affected order for
+// RepromiseOrder to key its recompute on.
+type PackageManifested struct {
+	base
+	PackageId PackageId
+	OrderRef  OrderRef
+}
+
+func NewPackageManifested(id PackageId, orderRef OrderRef, at time.Time) PackageManifested {
+	return PackageManifested{base: base{Name: "PackageManifested", At: at}, PackageId: id, OrderRef: orderRef}
+}

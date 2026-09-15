@@ -83,6 +83,7 @@ func (w *world) reset() {
 		GetQueueDepth:   &usecases.GetQueueDepth{Tasks: tasks},
 		ExpireLeases:    &usecases.ExpireLeases{Tasks: tasks, Publisher: publisher, Clock: clock},
 		RegisterStation: &usecases.RegisterStation{Stations: stations, Publisher: publisher},
+		SweepCPTMisses:  &usecases.SweepCPTMisses{Tasks: tasks, Publisher: publisher, Clock: clock},
 	}
 
 	w.server = httptest.NewServer(execmhttp.NewRouter(h, nil))
@@ -249,6 +250,10 @@ func (w *world) theLeaseExpirySweepRuns() error {
 	return w.do(http.MethodPost, "/tasks/expire-leases", nil)
 }
 
+func (w *world) theCPTMissedSweepRuns() error {
+	return w.do(http.MethodPost, "/tasks/sweep-cpt-misses", nil)
+}
+
 func (w *world) stationCompletesTheClaimedTask(stationId string) error {
 	return w.do(http.MethodPost, "/tasks/"+w.claimedTaskId+"/complete", map[string]any{
 		"stationId": stationId,
@@ -387,6 +392,19 @@ func (w *world) leasesWereFreed(expected int) error {
 	return nil
 }
 
+func (w *world) tasksWereReportedAsCPTMissed(expected int) error {
+	var reported struct {
+		Reported int `json:"reported"`
+	}
+	if err := w.decodeLast(&reported); err != nil {
+		return err
+	}
+	if reported.Reported != expected {
+		return fmt.Errorf("expected %d task(s) reported as CPT-missed, got %d", expected, reported.Reported)
+	}
+	return nil
+}
+
 func (w *world) theSealedPackageHasStatus(expected string) error {
 	var sealed struct {
 		Status string `json:"status"`
@@ -474,6 +492,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^the clock advances by (\d+) minutes$`, w.theClockAdvancesBy)
 	sc.Step(`^Station "([^"]*)" renews the lease on the claimed Task$`, w.stationRenewsTheLease)
 	sc.Step(`^the lease expiry sweep runs$`, w.theLeaseExpirySweepRuns)
+	sc.Step(`^the CPT-missed sweep runs$`, w.theCPTMissedSweepRuns)
 	sc.Step(`^Station "([^"]*)" completes the claimed Task$`, w.stationCompletesTheClaimedTask)
 	sc.Step(`^Station "([^"]*)" seal(?:s|ed) a Package for the claimed Task with scanned contents "([^"]*)"$`, w.stationSealsAPackage)
 	sc.Step(`^the SLAM weigh-check runs on the Package with an actual weight of ([0-9.]+) against an expected weight of ([0-9.]+)$`, w.theSlamWeighCheckRuns)
@@ -484,6 +503,7 @@ func InitializeScenario(sc *godog.ScenarioContext) {
 	sc.Step(`^the response is a Problem Details document of type "([^"]*)"$`, w.theResponseIsAProblemOfType)
 	sc.Step(`^the queue depth for "([^"]*)" is (\d+)$`, w.theQueueDepthIs)
 	sc.Step(`^(\d+) leases? (?:were|was) freed$`, w.leasesWereFreed)
+	sc.Step(`^(\d+) tasks? (?:were|was) reported as CPT-missed$`, w.tasksWereReportedAsCPTMissed)
 	sc.Step(`^the sealed Package has status "([^"]*)"$`, w.theSealedPackageHasStatus)
 	sc.Step(`^the sealed Package holds scanned contents "([^"]*)"$`, w.theSealedPackageHoldsContents)
 	sc.Step(`^an? "([^"]*)" domain event is recorded$`, w.aDomainEventIsRecorded)

@@ -866,6 +866,37 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /tasks/sweep-cpt-misses:
+    post:
+      operationId: sweepCPTMisses
+      tags: [Tasks]
+      summary: Sweep every still-open task whose CPT has passed and report it as missed
+      description: >
+        The Clock-driven half of the promise feedback loop with
+        order-management (ADR 0014 §5, this service's own ADR-0025): scans
+        every task still open (Pending or Claimed — i.e. not Completed) and,
+        for each whose CPT is at or before now, publishes `TaskCPTMissed`.
+        Unlike `/tasks/expire-leases`, this never mutates the task's own
+        lifecycle state — a CPT miss is a fact reported upstream, not a
+        state transition. A collection-level action on the `tasks`
+        resource, mirroring `/tasks/expire-leases`'s own convention exactly.
+        **Not idempotent in the usual sense by design**: a task still open
+        past its CPT is reported again on every sweep pass for as long as
+        it remains open — order-management's `RepromiseOrder` consumer is
+        explicitly designed (ADR 0014 §5) to be idempotent on
+        `(orderId, sourceEventId)` because of this. Takes no request body.
+      responses:
+        "200":
+          description: Sweep completed; body reports how many tasks were reported as CPT-missed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SweepCPTMissesResponse"
+              example:
+                reported: 1
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /healthz:
     get:
       operationId: getHealthz
@@ -1192,6 +1223,15 @@ components:
           format: int32
           description: Count of tasks freed back to Pending by this sweep.
           example: 2
+
+    SweepCPTMissesResponse:
+      type: object
+      properties:
+        reported:
+          type: integer
+          format: int32
+          description: Count of tasks reported as CPT-missed (TaskCPTMissed raised) by this sweep pass.
+          example: 1
 
     RegisterStationRequest:
       type: object
