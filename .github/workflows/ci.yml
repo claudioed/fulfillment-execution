@@ -229,7 +229,9 @@ jobs:
         with:
           node-version: "20"
       - name: Install Spectral
-        run: npm install -g @stoplight/spectral-cli@6.16.3
+        run: |
+          npm ci --prefix apis/tooling
+          echo "$PWD/apis/tooling/node_modules/.bin" >> "$GITHUB_PATH"
       - name: Lint OpenAPI spec
         run: spectral lint apis/openapi.yaml --ruleset .spectral.yaml --fail-severity=warn
       - name: Lint AsyncAPI spec
