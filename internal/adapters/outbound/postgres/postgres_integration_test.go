@@ -117,6 +117,57 @@ func TestTaskRepo_FindClaimableByType_OrdersByEarliestCPT(t *testing.T) {
 	}
 }
 
+// FindOpenPastCPT (ADR-0025) must return Pending/Claimed tasks whose CPT is
+// at or before now, but never a Completed one regardless of its CPT — real
+// Postgres round-trip of the same status+CPT filter task.Task.IsCPTMissed
+// applies in-process.
+func TestTaskRepo_FindOpenPastCPT_ReturnsOnlyOpenTasksPastCPT(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewTaskRepo(pool)
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Microsecond)
+
+	overdue := task.New("integration-task-cpt-overdue", task.Pick, shared.NewCPT(now.Add(-time.Hour)), "order-overdue", shared.NewCapabilitySet("pick"), false, false)
+	notYetDue := task.New("integration-task-cpt-not-due", task.Pick, shared.NewCPT(now.Add(time.Hour)), "order-not-due", shared.NewCapabilitySet("pick"), false, false)
+	completedOverdue := task.New("integration-task-cpt-completed", task.Pick, shared.NewCPT(now.Add(-time.Hour)), "order-completed", shared.NewCapabilitySet("pick"), false, false)
+	if err := completedOverdue.Claim("s1", shared.NewCapabilitySet("pick"), now.Add(-2*time.Hour), time.Hour); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	if err := completedOverdue.Complete("s1", now.Add(-90*time.Minute)); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	for _, tk := range []*task.Task{overdue, notYetDue, completedOverdue} {
+		if err := repo.Save(ctx, tk); err != nil {
+			t.Fatalf("Save(%s): %v", tk.Id(), err)
+		}
+	}
+
+	got, err := repo.FindOpenPastCPT(ctx, now)
+	if err != nil {
+		t.Fatalf("FindOpenPastCPT: %v", err)
+	}
+	var sawOverdue, sawNotYetDue, sawCompleted bool
+	for _, tk := range got {
+		switch tk.Id() {
+		case overdue.Id():
+			sawOverdue = true
+		case notYetDue.Id():
+			sawNotYetDue = true
+		case completedOverdue.Id():
+			sawCompleted = true
+		}
+	}
+	if !sawOverdue {
+		t.Fatalf("expected the overdue Pending task to be returned, got %d results", len(got))
+	}
+	if sawNotYetDue {
+		t.Fatalf("expected the not-yet-due task to be excluded")
+	}
+	if sawCompleted {
+		t.Fatalf("expected the Completed (but overdue) task to be excluded")
+	}
+}
+
 func TestStationRepo_SaveAndFindById(t *testing.T) {
 	pool := newPool(t)
 	repo := postgres.NewStationRepo(pool)
@@ -136,6 +187,51 @@ func TestStationRepo_SaveAndFindById(t *testing.T) {
 	}
 	if !got.CanAccept(shared.NewCapabilitySet("pick")) {
 		t.Fatalf("expected round-tripped station to keep its capabilities")
+	}
+}
+
+// TestStationRepo_SaveAndFindById_WithLocationCode proves the new
+// location_code column (ADR-0024) round-trips against real Postgres, both
+// when set and when left empty.
+func TestStationRepo_SaveAndFindById_WithLocationCode(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewStationRepo(pool)
+
+	id := shared.StationId("integration-station-location")
+	s := station.New(id, shared.NewCapabilitySet("pack"))
+	s.SetLocationCode("WH1-STOR-AMB-A07-01-01-A")
+
+	if err := repo.Save(context.Background(), s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := repo.FindById(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindById: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("expected station to be found")
+	}
+	if got.LocationCode() != "WH1-STOR-AMB-A07-01-01-A" {
+		t.Fatalf("expected round-tripped LocationCode, got %q", got.LocationCode())
+	}
+}
+
+func TestStationRepo_SaveAndFindById_EmptyLocationCode(t *testing.T) {
+	pool := newPool(t)
+	repo := postgres.NewStationRepo(pool)
+
+	id := shared.StationId("integration-station-no-location")
+	s := station.New(id, shared.NewCapabilitySet("pick"))
+
+	if err := repo.Save(context.Background(), s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := repo.FindById(context.Background(), id)
+	if err != nil {
+		t.Fatalf("FindById: %v", err)
+	}
+	if got.LocationCode() != "" {
+		t.Fatalf("expected empty LocationCode, got %q", got.LocationCode())
 	}
 }
 

@@ -89,11 +89,14 @@ touching `internal/domain/` or `internal/application/usecases/`.
 ## Domain events (past tense)
 
 TaskCreated, TaskClaimed, LeaseExpired, TaskCompleted, ItemPicked,
-PackageSealed, WeightDiscrepancyDetected, LabelApplied, PackageDiverted.
+PackageSealed, WeightDiscrepancyDetected, LabelApplied, PackageDiverted,
+TaskCPTMissed, PackageManifested.
 
 Full AsyncAPI catalogue, publication status per event, and the CloudEvents
-envelope are in `api-and-integration.md` — only `TaskCompleted` is actually
-on the wire today.
+envelope are in `api-and-integration.md` — `TaskCompleted`, `TaskCPTMissed`,
+and `PackageManifested` are on the wire today (ADR-0025 added the latter
+two, closing the promise-feedback-loop half of order-management's ADR
+0014 §5).
 
 ## Use cases (application layer)
 
@@ -105,9 +108,13 @@ on the wire today.
    derived from the task's Fragile flag; performs a live per-SKU DOT hazard
    classification lookup and rejects on same-package segregation violation
    (ADR-0010)
-6. RunSlam(packageId, actualWeight, expectedWeight) -> LabelApplied or Diverted
+6. RunSlam(packageId, actualWeight, expectedWeight) -> LabelApplied +
+   PackageManifested (SLAM pass, ADR-0025), or WeightDiscrepancyDetected +
+   PackageDiverted (SLAM fail — not manifested)
 7. GetQueueDepth(taskType) -> read model
 8. GetInstalledCapacity(capability) -> read model (ADR-0018)
 9. ExpireLeases(now) -> sweeps expired claims back to Pending (Clock-driven)
 10. CheckInStation / CheckOutStation(stationId, associateId) -> occupant
     tracking for labor-performance attribution (ADR-0014)
+11. SweepCPTMisses(now) -> raises TaskCPTMissed for every still-open task
+    past its CPT (Clock-driven, re-fires every pass while overdue; ADR-0025)

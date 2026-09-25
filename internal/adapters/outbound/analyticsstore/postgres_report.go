@@ -36,7 +36,8 @@ func (r *PostgresReport) Query(ctx context.Context, q report.ReportQuery) (repor
 			completions, lease_expiries, weigh_check_diverts,
 			CASE WHEN completions_with_claim > 0
 			     THEN claim_to_complete_seconds / completions_with_claim
-			     ELSE 0 END AS avg_claim_to_complete_seconds
+			     ELSE 0 END AS avg_claim_to_complete_seconds,
+			packages_manifested, packages_on_time_cpt, packages_late_cpt
 		 FROM throughput_rollup
 		 WHERE hour_bucket >= $1 AND hour_bucket < $2
 		   AND ($3 = '' OR task_type = $3)
@@ -58,6 +59,7 @@ func (r *PostgresReport) Query(ctx context.Context, q report.ReportQuery) (repor
 			&row.Key.TaskType, &row.Key.StationId, &bucket,
 			&row.Completions, &row.LeaseExpiries, &row.WeighCheckDiverts,
 			&row.AvgClaimToCompleteSeconds,
+			&row.PackagesManifested, &row.PackagesOnTimeToCPT, &row.PackagesLateToCPT,
 		); err != nil {
 			return report.ThroughputReport{}, fmt.Errorf("analyticsstore: scan row: %w", err)
 		}

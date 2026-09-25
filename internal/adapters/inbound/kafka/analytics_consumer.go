@@ -40,12 +40,19 @@ type analyticsEnvelope struct {
 // analyticsData is the union of fields the projecting event payloads carry.
 // Each event_type populates the subset it needs. TaskType is enriched onto
 // task-scoped events by the publisher (via a TaskRepo lookup) since the domain
-// events do not carry it.
+// events do not carry it. OnTime/Resolved are PackageManifested-only
+// (ADR-0026): Resolved reports whether the publisher could correlate the
+// package back to an originating SLAM task at all (see
+// AnalyticsPublisher.onTimeToCPTFields) — when false, TaskType/StationId/
+// OnTime are meaningless and the projection is skipped rather than recorded
+// with a wrong dimension.
 type analyticsData struct {
 	TaskId    string `json:"task_id"`
 	TaskType  string `json:"task_type"`
 	StationId string `json:"station_id"`
 	PackageId string `json:"package_id"`
+	OnTime    bool   `json:"on_time"`
+	Resolved  bool   `json:"resolved"`
 }
 
 // AnalyticsConsumer reads analytics events off the analytics topic and
@@ -142,11 +149,11 @@ func (c *AnalyticsConsumer) HandleMessage(ctx context.Context, raw []byte) error
 		return fmt.Errorf("analytics: decode envelope: %w", err)
 	}
 
-	// Only the four throughput-moving events project; everything else
+	// Only the five throughput-moving events project; everything else
 	// (TaskCreated, ItemPicked, PackageSealed, LabelApplied, PackageDiverted)
 	// is acknowledged without touching the read model or the processed set.
 	switch env.EventType {
-	case "TaskClaimed", "TaskCompleted", "LeaseExpired", "WeightDiscrepancyDetected":
+	case "TaskClaimed", "TaskCompleted", "LeaseExpired", "WeightDiscrepancyDetected", "PackageManifested":
 	default:
 		return nil
 	}
@@ -173,6 +180,17 @@ func (c *AnalyticsConsumer) HandleMessage(ctx context.Context, raw []byte) error
 		return c.Projection.ApplyLeaseExpired(ctx, env.EventId, data.TaskId, data.TaskType, data.StationId, env.OccurredAt)
 	case "WeightDiscrepancyDetected":
 		return c.Projection.ApplyWeightDiscrepancy(ctx, env.EventId, taskTypeSlam, data.StationId, env.OccurredAt)
+	case "PackageManifested":
+		// The publisher's enrichment lookup (onTimeToCPTFields) could not
+		// correlate this package to an originating SLAM task — an edge
+		// case that should not happen in practice (see ADR-0026). Skip
+		// recording rather than projecting a wrong/empty dimension; the
+		// event is still marked processed above so a redelivery is a
+		// no-op, matching this consumer's idempotency contract.
+		if !data.Resolved {
+			return nil
+		}
+		return c.Projection.ApplyPackageManifested(ctx, env.EventId, data.TaskType, data.StationId, env.OccurredAt, data.OnTime)
 	default:
 		return nil
 	}

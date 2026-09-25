@@ -61,6 +61,7 @@ func newTestHandlers() (*http.Handlers, *memory.TaskRepo, *memory.StationRepo, *
 			Clock:          clock,
 		},
 		GetInstalledCapacity: &usecases.GetInstalledCapacity{Stations: stations},
+		SweepCPTMisses:       &usecases.SweepCPTMisses{Tasks: tasks, Publisher: publisher, Clock: clock},
 	}
 	return h, tasks, stations, packages, clock
 }
@@ -586,6 +587,27 @@ func TestPostExpireLeases(t *testing.T) {
 	_ = json.NewDecoder(rec.Body).Decode(&resp)
 	if resp.Freed != 1 {
 		t.Fatalf("expected 1 freed task, got %d", resp.Freed)
+	}
+}
+
+func TestPostSweepCPTMisses(t *testing.T) {
+	srv, _, _, _, clock := newTestServer()
+	doJSON(t, srv, stdhttp.MethodPost, "/tasks", map[string]any{
+		"type": "PICK", "cpt": clock.Now().Add(time.Minute), "orderRef": "order-1", "requiredCapabilities": []string{"pick"},
+	})
+
+	clock.Advance(2 * time.Minute)
+
+	rec := doJSON(t, srv, stdhttp.MethodPost, "/tasks/sweep-cpt-misses", nil)
+	if rec.Code != stdhttp.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Reported int `json:"reported"`
+	}
+	_ = json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.Reported != 1 {
+		t.Fatalf("expected 1 task reported, got %d", resp.Reported)
 	}
 }
 

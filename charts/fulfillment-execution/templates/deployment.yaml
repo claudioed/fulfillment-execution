@@ -4,6 +4,7 @@ metadata:
   name: {{ include "fulfillment-execution.fullname" . }}
   labels:
     {{- include "fulfillment-execution.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
 spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.replicaCount }}
@@ -11,6 +12,7 @@ spec:
   selector:
     matchLabels:
       {{- include "fulfillment-execution.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: api
   template:
     metadata:
       annotations:
@@ -23,6 +25,7 @@ spec:
         {{- end }}
       labels:
         {{- include "fulfillment-execution.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: api
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -96,3 +96,36 @@ func TestRehydrate_ReconstructsPersistedState(t *testing.T) {
 		t.Fatalf("expected station occupied by %s, got %+v", occupant, s.Occupant())
 	}
 }
+
+func TestLocationCode_UnsetByDefault(t *testing.T) {
+	s := newPickStation()
+	if s.LocationCode() != "" {
+		t.Fatalf("expected empty LocationCode by default, got %q", s.LocationCode())
+	}
+}
+
+func TestSetLocationCode_RecordsIt(t *testing.T) {
+	s := newPickStation()
+	s.SetLocationCode("WH1-STOR-AMB-A07-01-01-A")
+	if got := s.LocationCode(); got != "WH1-STOR-AMB-A07-01-01-A" {
+		t.Fatalf("got LocationCode %q, want WH1-STOR-AMB-A07-01-01-A", got)
+	}
+}
+
+func TestRehydrateWithLocation_ReconstructsLocationCode(t *testing.T) {
+	occupant := station.OccupantId("worker-1")
+	s := station.RehydrateWithLocation(shared.StationId("st2"), shared.NewCapabilitySet("pack"), &occupant, "WH1-STOR-AMB-A07-01-01-A")
+	if got := s.LocationCode(); got != "WH1-STOR-AMB-A07-01-01-A" {
+		t.Fatalf("got LocationCode %q, want WH1-STOR-AMB-A07-01-01-A", got)
+	}
+	if !s.IsOccupied() {
+		t.Fatalf("expected the occupant to still be reconstructed")
+	}
+}
+
+func TestRehydrateWithLocation_EmptyLocationCode(t *testing.T) {
+	s := station.RehydrateWithLocation(shared.StationId("st3"), shared.NewCapabilitySet("pack"), nil, "")
+	if s.LocationCode() != "" {
+		t.Fatalf("expected empty LocationCode, got %q", s.LocationCode())
+	}
+}

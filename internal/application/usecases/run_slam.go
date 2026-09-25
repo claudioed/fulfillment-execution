@@ -8,8 +8,10 @@ import (
 )
 
 // RunSlam runs the SLAM (Scan, Label, Apply, Manifest) weigh-check on a
-// sealed package: a matching weight applies the shipping label, a
-// discrepancy diverts the package.
+// sealed package: a matching weight applies the shipping label and raises
+// PackageManifested (the "SLAM pass" half of order-management ADR 0014
+// §5's promise feedback loop — see ADR-0025), a discrepancy diverts the
+// package instead (not manifested).
 type RunSlam struct {
 	Packages  ports.PackageRepo
 	Publisher ports.EventPublisher
@@ -44,6 +46,9 @@ func (uc *RunSlam) Execute(ctx context.Context, packageId shared.PackageId, actu
 				shared.NewPackageDiverted(packageId, now),
 			)
 		}
-		return uc.Publisher.Publish(ctx, shared.NewLabelApplied(packageId, now))
+		return uc.Publisher.Publish(ctx,
+			shared.NewLabelApplied(packageId, now),
+			shared.NewPackageManifested(packageId, p.OrderRef(), now),
+		)
 	})
 }

@@ -31,6 +31,7 @@ type Handlers struct {
 	CheckOutStation      *usecases.CheckOutStation
 	ArriveAtRebin        *usecases.ArriveAtRebin
 	GetInstalledCapacity *usecases.GetInstalledCapacity
+	SweepCPTMisses       *usecases.SweepCPTMisses
 }
 
 func toTaskResponse(t *task.Task) taskResponse {
@@ -78,6 +79,7 @@ func toStationResponse(s *station.Station) stationResponse {
 		Id:           string(s.Id()),
 		Capabilities: caps,
 		Occupied:     s.IsOccupied(),
+		LocationCode: s.LocationCode(),
 	}
 }
 
@@ -271,6 +273,20 @@ func (h *Handlers) PostExpireLeases(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, expireLeasesResponse{Freed: freed})
 }
 
+// PostSweepCPTMisses handles POST /tasks/sweep-cpt-misses: the Clock-driven
+// sweep that detects tasks still open past their CPT and raises
+// TaskCPTMissed for each (ADR-0025). Mirrors PostExpireLeases's own
+// externally-triggered convention exactly — a collection-level action on
+// the tasks resource, not scoped to a single task id.
+func (h *Handlers) PostSweepCPTMisses(w http.ResponseWriter, r *http.Request) {
+	reported, err := h.SweepCPTMisses.Execute(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, sweepCPTMissesResponse{Reported: reported})
+}
+
 // PostRegisterStation handles POST /stations.
 func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
 	var req registerStationRequest
@@ -283,7 +299,7 @@ func (h *Handlers) PostRegisterStation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s, err := h.RegisterStation.Execute(r.Context(), req.StationId, req.Capabilities)
+	s, err := h.RegisterStation.Execute(r.Context(), req.StationId, req.Capabilities, req.LocationCode)
 	if err != nil {
 		writeError(w, r, err)
 		return

@@ -164,6 +164,10 @@ Terraform, and warehouse-ops-agent's `FULFILLMENT_MCP_ENDPOINT` points at
 | `ADMIN_ADDR` | `:8091` | `cmd/fulfillment-projector` admin/health listen address |
 | `MCP_ADDR` | `:8090` | `cmd/mcp` listen address — MCP Streamable HTTP at `/` and `/mcp`, unauthenticated `GET /healthz` |
 | `REPORTS_BASE_URL` | (unset) | `cmd/mcp` only: base URL of `cmd/fulfillment-reports`; when set, registers the `get_fulfillment_throughput_report` tool |
+| `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `permissive` (default, no-op, every scanned SKU treated as unclassified) or `http` — live per-scanned-SKU DOT hazard classification lookup from inventory-storage at seal time (ADR-0010) |
+| `INVENTORY_STORAGE_BASE_URL` | (unset) | Base URL for inventory-storage's REST API; required when `PRODUCT_CLASSIFICATION_MODE=http` |
+| `LOCATION_ROLE_MODE` | `permissive` | `permissive` (default, no-op, a supplied `locationCode` is recorded unchecked) or `http` — live registration-time lookup of a station's `locationCode` role from facility-layout, rejecting a KNOWN non-WorkCenter role (ADR-0024) |
+| `FACILITY_LAYOUT_BASE_URL` | (unset) | Base URL for facility-layout's REST API; required when `LOCATION_ROLE_MODE=http` |
 | `LOG_LEVEL`    | `info`  | `debug` \| `info` \| `warn` \| `error`, case-insensitive |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `localhost:4317` | OTel Collector's OTLP/gRPC address (see [Observability](#observability)) |
 | `OTEL_SERVICE_NAME` | `fulfillment-execution` | `service.name` resource attribute |
@@ -576,3 +580,52 @@ is `"order-smoke-1"`.
   `FixedClock`.
 - **SLAM weight-diversion**: `internal/domain/package/package_test.go` —
   `TestWeigh_DivertsOutsideTolerance`.
+
+## Operator micro-frontend (`web/`)
+
+`web/` is `fulfillment_mfe`, this context's Module Federation remote. It talks only to
+this service's own REST API and is never part of `make check`.
+
+**Standalone development** is unchanged:
+
+```bash
+cd web && npm install && npm run dev     # http://localhost:5184
+```
+
+**Deployed to the kind cluster**, it is built into a static bundle and served
+by its own `nginx-unprivileged` pod:
+
+```bash
+cd web
+docker build --build-context uikit=../../warehouse-ui-kit \
+  -t warehouse/fulfillment-execution-frontend:local .
+```
+
+The cluster's localhost topology separates the two kinds of traffic onto two
+independent entrypoints, and neither proxies to the other:
+
+| URL | Served by | Carries |
+|---|---|---|
+| `http://localhost/mfes/fulfillment-execution/` | Nginx web gateway → this remote's nginx pod | HTML, JS, CSS, fonts, `remoteEntry.js` |
+| `http://localhost:8000/api/fulfillment-execution/` | Kong | this service's REST API |
+
+Kong never serves frontend assets, and the Nginx gateway never proxies an API.
+Enable the workload with `frontend.enabled=true` in the Helm chart; the Service
+is deliberately `ClusterIP` with no Ingress/HTTPRoute, because frontend path
+routing belongs to the Nginx web gateway in `warehouse-infra`.
+
+Because one image must work in more than one environment, the remote reads its
+API origin at runtime from `window.__WAREHOUSE_CONFIG__.apiOrigin` (published
+by the console shell) rather than baking a hostname in at build time. A
+production build with no runtime config **fails loudly** instead of silently
+falling back to a developer port; standalone `npm run dev` still uses
+`http://localhost:8084`. See `web/src/config.ts`.
+
+Chart invariants are asserted by:
+
+```bash
+python3 charts/fulfillment-execution/tests/test_service_selectors.py
+```
+
+which proves every Service selects exactly one Deployment — the OLTP Service
+must never select the frontend, analytics or MCP pods.

@@ -17,6 +17,7 @@ import (
 	outboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/outbound/kafka"
 	"github.com/claudioed/fulfillment-execution/internal/adapters/outbound/postgres"
 	"github.com/claudioed/fulfillment-execution/internal/application/usecases"
+	pack "github.com/claudioed/fulfillment-execution/internal/domain/package"
 	"github.com/claudioed/fulfillment-execution/internal/domain/shared"
 	"github.com/claudioed/fulfillment-execution/internal/domain/station"
 	"github.com/claudioed/fulfillment-execution/internal/domain/task"
@@ -404,4 +405,122 @@ func (p *selectiveFailPublisher) Publish(ctx context.Context, evts ...shared.Dom
 		}
 	}
 	return p.inner.Publish(ctx, evts...)
+}
+
+// 5. TaskCPTMissed (ADR-0025) round-trips through the real outbox -> relay
+// path exactly like every other event: SweepCPTMisses writes it into
+// outbox_events inside its own transaction, and RelayOnce delivers it
+// on-topic, keyed by TaskId, with the OrderRef/TaskType/CPT fields intact.
+func TestOutbox_SweepCPTMisses_RoundTripsThroughRelay(t *testing.T) {
+	s := newOutboxStack(t)
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: s.tasks, Publisher: s.pub, Clock: s.clock, NewId: taskIds("c"), UnitOfWork: s.uow}
+	created, err := create.Execute(ctx, task.Pick, shared.NewCPT(s.clock.t.Add(time.Minute)), "order-cpt", shared.NewCapabilitySet("pick"), false, false)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	overdueClock := fixedClock{t: s.clock.t.Add(2 * time.Minute)}
+	sweep := &usecases.SweepCPTMisses{Tasks: s.tasks, Publisher: s.pub, Clock: overdueClock, UnitOfWork: s.uow}
+	reported, err := sweep.Execute(ctx)
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if reported != 1 {
+		t.Fatalf("expected 1 task reported, got %d", reported)
+	}
+
+	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.Topic+"' AND event_type = 'TaskCPTMissed'"); got != 1 {
+		t.Fatalf("expected 1 unpublished integration TaskCPTMissed row, got %d", got)
+	}
+
+	sink := &recordingSink{}
+	relay := postgres.NewOutboxRelay(s.pool, sink, slog.Default())
+	if _, err := relay.RelayOnce(ctx); err != nil {
+		t.Fatalf("relay: %v", err)
+	}
+	var found *outboundkafka.Encoded
+	for i := range sink.sent {
+		if sink.sent[i].Topic == outboundkafka.Topic && sink.sent[i].EventType == "TaskCPTMissed" {
+			found = &sink.sent[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a relayed TaskCPTMissed message, got %+v", sink.sent)
+	}
+	if string(found.Key) != string(created.Id()) {
+		t.Fatalf("expected message keyed by TaskId %s, got %s", created.Id(), found.Key)
+	}
+	if !bytes.Contains(found.Value, []byte(`"order_ref":"order-cpt"`)) || !bytes.Contains(found.Value, []byte(`"task_type":"PICK"`)) {
+		t.Fatalf("TaskCPTMissed payload missing OrderRef/TaskType: %s", found.Value)
+	}
+}
+
+// 6. PackageManifested (ADR-0025) round-trips through the real outbox ->
+// relay path alongside LabelApplied on a successful SLAM pass — additive,
+// not a replacement.
+func TestOutbox_RunSlam_LabelAppliedAndPackageManifestedRoundTripTogether(t *testing.T) {
+	s := newOutboxStack(t)
+	ctx := context.Background()
+	p := pack.New("pkg-manifest-1", "order-manifest", false, false)
+	// A non-zero hazard class is used solely so ScannedHazardClasses is a
+	// non-nil slice — packages.scanned_hazard_classes is NOT NULL and
+	// Package.ScanItem's hazardClass=0 shortcut never appends to it (see
+	// package.go); mirrors postgres_integration_test.go's own
+	// TestPackageRepo_SaveAndFindById fixture for the same reason.
+	if err := p.ScanItemWithClass("sku-1", 3); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if err := p.Seal(); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := s.packages.Save(ctx, p); err != nil {
+		t.Fatalf("save package: %v", err)
+	}
+
+	slam := &usecases.RunSlam{Packages: s.packages, Publisher: s.pub, Clock: s.clock, UnitOfWork: s.uow}
+	if err := slam.Execute(ctx, p.Id(), 2.0, 2.0); err != nil {
+		t.Fatalf("slam: %v", err)
+	}
+
+	if got := countOutbox(t, s.pool, "published_at IS NULL AND topic = '"+outboundkafka.Topic+"' AND event_type = 'PackageManifested'"); got != 1 {
+		t.Fatalf("expected 1 unpublished integration PackageManifested row, got %d", got)
+	}
+
+	sink := &recordingSink{}
+	relay := postgres.NewOutboxRelay(s.pool, sink, slog.Default())
+	if _, err := relay.RelayOnce(ctx); err != nil {
+		t.Fatalf("relay: %v", err)
+	}
+	var foundManifested, foundLabelApplied bool
+	var manifestedPayload []byte
+	for _, m := range sink.sent {
+		if m.Topic != outboundkafka.Topic {
+			continue
+		}
+		switch m.EventType {
+		case "PackageManifested":
+			foundManifested = true
+			manifestedPayload = m.Value
+			if string(m.Key) != string(p.Id()) {
+				t.Fatalf("expected PackageManifested keyed by PackageId %s, got %s", p.Id(), m.Key)
+			}
+		}
+	}
+	// LabelApplied is not on the integration contract (see api-and-
+	// integration.md): only TaskCompleted/TaskCPTMissed/PackageManifested
+	// are. Confirm it stayed off the integration topic while still
+	// landing on analytics.
+	if foundLabelApplied {
+		t.Fatal("LabelApplied unexpectedly reached the integration topic")
+	}
+	if !foundManifested {
+		t.Fatalf("expected a relayed PackageManifested message, got %+v", sink.sent)
+	}
+	if !bytes.Contains(manifestedPayload, []byte(`"order_ref":"order-manifest"`)) {
+		t.Fatalf("PackageManifested payload missing OrderRef: %s", manifestedPayload)
+	}
+	if got := countOutbox(t, s.pool, "topic = '"+outboundkafka.AnalyticsTopic+"' AND event_type = 'LabelApplied'"); got != 1 {
+		t.Fatalf("expected LabelApplied on the analytics topic, got %d", got)
+	}
 }

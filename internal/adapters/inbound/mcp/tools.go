@@ -211,9 +211,10 @@ func (d Deps) registerTools(server *mcp.Server) {
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &destructive, IdempotentHint: notIdempotent},
 	}, d.completeTask)
 
-	// Curated read-only data-product tool, registered only when the reports
+	// Curated read-only data-product tools, registered only when the reports
 	// client is configured.
 	d.registerReportTool(server)
+	d.registerOnTimeToCPTTool(server)
 }
 
 // addTool registers one tool. It centralises the cross-cutting concern

@@ -134,7 +134,7 @@ func TestDiagnoseStuckTasks(t *testing.T) {
 
 	// Register a station and claim a PICK task, creating an active lease that
 	// expires at base + DefaultLeaseDuration (5m).
-	if _, err := h.station.Execute(ctx, "s1", []string{"pick"}); err != nil {
+	if _, err := h.station.Execute(ctx, "s1", []string{"pick"}, ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	h.seedPending(t, task.Pick, "o1", time.Hour, "pick")
@@ -180,7 +180,7 @@ func completeHarness(t *testing.T) (*harness, string) {
 	t.Helper()
 	h := newHarness(t)
 	ctx := context.Background()
-	if _, err := h.station.Execute(ctx, "s1", []string{"pick"}); err != nil {
+	if _, err := h.station.Execute(ctx, "s1", []string{"pick"}, ""); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	h.seedPending(t, task.Pick, "o1", time.Hour, "pick")

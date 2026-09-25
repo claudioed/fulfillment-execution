@@ -231,6 +231,19 @@ paths:
                 occupied: false
         "400":
           $ref: "#/components/responses/BadRequestNoInstance"
+        "422":
+          description: >
+            The supplied locationCode is KNOWN (per facility-layout) to
+            resolve to a role other than WorkCenter.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+              example:
+                type: https://errors.fulfillment-execution.warehouse-systems.dev/station-location-not-workcenter
+                title: Station's locationCode does not resolve to a facility-layout WorkCenter
+                status: 422
+                detail: "usecases: station location does not resolve to a WorkCenter"
         "500":
           $ref: "#/components/responses/InternalError"
 
@@ -853,6 +866,37 @@ paths:
         "500":
           $ref: "#/components/responses/InternalError"
 
+  /tasks/sweep-cpt-misses:
+    post:
+      operationId: sweepCPTMisses
+      tags: [Tasks]
+      summary: Sweep every still-open task whose CPT has passed and report it as missed
+      description: >
+        The Clock-driven half of the promise feedback loop with
+        order-management (ADR 0014 §5, this service's own ADR-0025): scans
+        every task still open (Pending or Claimed — i.e. not Completed) and,
+        for each whose CPT is at or before now, publishes `TaskCPTMissed`.
+        Unlike `/tasks/expire-leases`, this never mutates the task's own
+        lifecycle state — a CPT miss is a fact reported upstream, not a
+        state transition. A collection-level action on the `tasks`
+        resource, mirroring `/tasks/expire-leases`'s own convention exactly.
+        **Not idempotent in the usual sense by design**: a task still open
+        past its CPT is reported again on every sweep pass for as long as
+        it remains open — order-management's `RepromiseOrder` consumer is
+        explicitly designed (ADR 0014 §5) to be idempotent on
+        `(orderId, sourceEventId)` because of this. Takes no request body.
+      responses:
+        "200":
+          description: Sweep completed; body reports how many tasks were reported as CPT-missed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SweepCPTMissesResponse"
+              example:
+                reported: 1
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /healthz:
     get:
       operationId: getHealthz
@@ -1180,6 +1224,15 @@ components:
           description: Count of tasks freed back to Pending by this sweep.
           example: 2
 
+    SweepCPTMissesResponse:
+      type: object
+      properties:
+        reported:
+          type: integer
+          format: int32
+          description: Count of tasks reported as CPT-missed (TaskCPTMissed raised) by this sweep pass.
+          example: 1
+
     RegisterStationRequest:
       type: object
       required: [stationId, capabilities]
@@ -1194,6 +1247,17 @@ components:
           items:
             type: string
             example: pick
+        locationCode:
+          type: string
+          description: >
+            Optional facility-layout LocationCode identifying where this
+            station physically sits (ADR-0024). Omitted entirely means
+            unchecked — no role validation is attempted. When supplied
+            and the location-role lookup is configured, a LocationCode
+            that KNOWINGLY resolves to a role other than WorkCenter is
+            rejected (422); an unrecognized LocationCode, or an
+            unavailable lookup, fails open and is recorded unchecked.
+          example: WH1-STOR-AMB-A07-01-01-A
       example:
         stationId: station-1
         capabilities: [pick]
@@ -1213,6 +1277,12 @@ components:
           type: boolean
           description: Whether the station currently has an occupant checked in.
           example: false
+        locationCode:
+          type: string
+          description: >
+            Omitted entirely (not defaulted to "") when the station has
+            no recorded locationCode (ADR-0024).
+          example: WH1-STOR-AMB-A07-01-01-A
 
     CheckInStationRequest:
       type: object

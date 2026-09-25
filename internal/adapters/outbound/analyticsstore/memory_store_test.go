@@ -126,3 +126,69 @@ var (
 	_ report.ProjectionStore = (*analyticsstore.MemoryStore)(nil)
 	_ report.ReportStore     = (*analyticsstore.MemoryStore)(nil)
 )
+
+// TestMemoryStore_ApplyPackageManifested_OnTimeAndLateCounters asserts the
+// on-time-to-CPT KPI's raw counters (ADR-0026): PackagesManifested always
+// increments, and exactly one of PackagesOnTimeToCPT/PackagesLateToCPT
+// increments per the caller-supplied onTime verdict — this store performs
+// no CPT comparison of its own.
+func TestMemoryStore_ApplyPackageManifested_OnTimeAndLateCounters(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	s := analyticsstore.NewMemoryStore()
+
+	if err := s.ApplyPackageManifested(ctx, "m1", "SLAM", "st1", base, true); err != nil {
+		t.Fatalf("apply on-time: %v", err)
+	}
+	if err := s.ApplyPackageManifested(ctx, "m2", "SLAM", "st1", base.Add(time.Minute), false); err != nil {
+		t.Fatalf("apply late: %v", err)
+	}
+	if err := s.ApplyPackageManifested(ctx, "m3", "SLAM", "st1", base.Add(2*time.Minute), true); err != nil {
+		t.Fatalf("apply on-time 2: %v", err)
+	}
+
+	rep, err := s.Query(ctx, report.ReportQuery{
+		From: base.Add(-time.Hour), To: base.Add(time.Hour), Granularity: report.GranularityHour,
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rep.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rep.Rows))
+	}
+	row := rep.Rows[0]
+	if row.PackagesManifested != 3 {
+		t.Errorf("PackagesManifested = %d, want 3", row.PackagesManifested)
+	}
+	if row.PackagesOnTimeToCPT != 2 {
+		t.Errorf("PackagesOnTimeToCPT = %d, want 2", row.PackagesOnTimeToCPT)
+	}
+	if row.PackagesLateToCPT != 1 {
+		t.Errorf("PackagesLateToCPT = %d, want 1", row.PackagesLateToCPT)
+	}
+}
+
+// TestMemoryStore_ApplyPackageManifested_Idempotent asserts a redelivered
+// eventId records the effect once, matching the idempotency contract every
+// other Apply* method already has.
+func TestMemoryStore_ApplyPackageManifested_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	at := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
+	s := analyticsstore.NewMemoryStore()
+
+	for range 2 {
+		if err := s.ApplyPackageManifested(ctx, "dup", "SLAM", "st1", at, true); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+	}
+
+	rep, err := s.Query(ctx, report.ReportQuery{
+		From: at.Add(-time.Hour), To: at.Add(time.Hour), Granularity: report.GranularityHour,
+	})
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	if len(rep.Rows) != 1 || rep.Rows[0].PackagesManifested != 1 {
+		t.Fatalf("expected 1 idempotent apply, got rows=%v", rep.Rows)
+	}
+}

@@ -26,11 +26,13 @@ func (w *fakeAnalyticsWriter) WriteMessages(_ context.Context, msgs ...kafkago.M
 
 // fakeTaskRepo is a minimal ports.TaskRepo whose FindById returns a task of a
 // fixed type, so the publisher's task_type enrichment can be asserted without
-// a real repository. Only FindById is used by the publisher; the rest satisfy
+// a real repository. byOrderRef backs FindByOrderRef for the
+// on-time-to-CPT enrichment lookup (see onTimeToCPTFields); the rest satisfy
 // the interface.
 type fakeTaskRepo struct {
-	taskType task.Type
-	found    bool
+	taskType   task.Type
+	found      bool
+	byOrderRef map[shared.OrderRef][]*task.Task
 }
 
 func (r fakeTaskRepo) FindById(_ context.Context, id shared.TaskId) (*task.Task, error) {
@@ -44,11 +46,14 @@ func (fakeTaskRepo) FindClaimableByType(context.Context, task.Type, time.Time) (
 	return nil, nil
 }
 func (fakeTaskRepo) FindAllClaimed(context.Context) ([]*task.Task, error) { return nil, nil }
+func (fakeTaskRepo) FindOpenPastCPT(context.Context, time.Time) ([]*task.Task, error) {
+	return nil, nil
+}
 func (fakeTaskRepo) CountByTypeAndStatus(context.Context, task.Type, task.Status) (int, error) {
 	return 0, nil
 }
-func (fakeTaskRepo) FindByOrderRef(context.Context, shared.OrderRef) ([]*task.Task, error) {
-	return nil, nil
+func (r fakeTaskRepo) FindByOrderRef(_ context.Context, orderRef shared.OrderRef) ([]*task.Task, error) {
+	return r.byOrderRef[orderRef], nil
 }
 
 func TestAnalyticsPublisher_PublishesEachEventType(t *testing.T) {
@@ -251,5 +256,104 @@ func TestAnalyticsPublisher_EnrichesTaskType(t *testing.T) {
 	}
 	if data["station_id"] != "s1" {
 		t.Errorf("station_id = %v, want s1", data["station_id"])
+	}
+}
+
+// TestAnalyticsPublisher_PackageManifested_OnTimeAndLateAndBoundary asserts
+// the on-time-to-CPT enrichment (ADR-0026): the publisher resolves the
+// originating SLAM task via FindByOrderRef, compares the manifest's
+// occurred_at against that task's CPT, and marks resolved=true. The
+// boundary case (manifested exactly at CPT) is asserted separately and
+// explicitly — it must count as ON TIME (manifestedAt <= cpt), the
+// deliberate mirror of task.Task.IsCPTMissed's own now>=cpt-counts-as-missed
+// boundary.
+func TestAnalyticsPublisher_PackageManifested_OnTimeAndLateAndBoundary(t *testing.T) {
+	cpt := time.Date(2026, 3, 1, 18, 0, 0, 0, time.UTC)
+
+	slamTask := func() *task.Task {
+		tk := task.New("slam-1", task.Slam, shared.NewCPT(cpt), "order-9", shared.NewCapabilitySet(), false, false)
+		if err := tk.Claim("station-9", shared.NewCapabilitySet(), cpt.Add(-time.Hour), time.Hour); err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		return tk
+	}
+
+	tests := []struct {
+		name         string
+		manifestedAt time.Time
+		wantOnTime   bool
+	}{
+		{"before CPT", cpt.Add(-time.Minute), true},
+		{"exactly at CPT (boundary — must count as on time)", cpt, true},
+		{"after CPT", cpt.Add(time.Minute), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &fakeAnalyticsWriter{}
+			repo := fakeTaskRepo{byOrderRef: map[shared.OrderRef][]*task.Task{"order-9": {slamTask()}}}
+			p := outboundkafka.NewAnalyticsPublisher(nil, repo, func() string { return "evt" })
+			p.Writer = w
+
+			evt := shared.NewPackageManifested("pkg-1", "order-9", tt.manifestedAt)
+			if err := p.Publish(context.Background(), evt); err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			if len(w.msgs) != 1 {
+				t.Fatalf("expected 1 message, got %d", len(w.msgs))
+			}
+			var env outboundkafka.AnalyticsEnvelope
+			if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+				t.Fatalf("unmarshal envelope: %v", err)
+			}
+			if env.EventType != "PackageManifested" {
+				t.Fatalf("event_type = %q, want PackageManifested", env.EventType)
+			}
+			var data map[string]any
+			if err := json.Unmarshal(env.Data, &data); err != nil {
+				t.Fatalf("unmarshal data: %v", err)
+			}
+			if data["resolved"] != true {
+				t.Fatalf("resolved = %v, want true", data["resolved"])
+			}
+			if data["task_type"] != string(task.Slam) {
+				t.Errorf("task_type = %v, want %v", data["task_type"], task.Slam)
+			}
+			if data["station_id"] != "station-9" {
+				t.Errorf("station_id = %v, want station-9", data["station_id"])
+			}
+			if data["on_time"] != tt.wantOnTime {
+				t.Errorf("on_time = %v, want %v", data["on_time"], tt.wantOnTime)
+			}
+		})
+	}
+}
+
+// TestAnalyticsPublisher_PackageManifested_UnresolvedWhenNoSLAMTask asserts
+// the fail-soft convention (ADR-0026): when no SLAM task can be found for
+// the package's OrderRef (an edge case that should not happen in practice —
+// every Package descends from a SLAM task by construction), the publisher
+// marshals resolved=false rather than erroring the whole publish, so the
+// consumer can skip recording instead of projecting a wrong dimension.
+func TestAnalyticsPublisher_PackageManifested_UnresolvedWhenNoSLAMTask(t *testing.T) {
+	w := &fakeAnalyticsWriter{}
+	// No SLAM task for "order-missing" — byOrderRef has no entry.
+	repo := fakeTaskRepo{byOrderRef: map[shared.OrderRef][]*task.Task{}}
+	p := outboundkafka.NewAnalyticsPublisher(nil, repo, func() string { return "evt" })
+	p.Writer = w
+
+	if err := p.Publish(context.Background(), shared.NewPackageManifested("pkg-1", "order-missing", time.Now())); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	var env outboundkafka.AnalyticsEnvelope
+	if err := json.Unmarshal(w.msgs[0].Value, &env); err != nil {
+		t.Fatalf("unmarshal envelope: %v", err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(env.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if data["resolved"] != false {
+		t.Errorf("resolved = %v, want false", data["resolved"])
 	}
 }
