@@ -12,6 +12,15 @@ import (
 // SealPackage runs the Pack path: a station scans an order's contents and
 // seals them into a Package, referenced by the Pack task it is working.
 //
+// Execute is idempotent on taskId (REST_AUDIT.md's flagged gap): a retried
+// POST /tasks/{id}/seal-package for a task that already has a sealed
+// Package returns that existing Package rather than creating a second one.
+// taskId is the natural dedupe key here — this endpoint is task-scoped
+// (exactly one Package is ever sealed per Pack task in this domain), it is
+// already the resource identifier in the URL, and unlike a client-supplied
+// idempotency key it requires no new client contract. See
+// ports.PackageRepo.FindByTaskId and migration 0011.
+//
 // ClassificationLookup is the live, synchronous, per-scanned-SKU outbound
 // read from inventory-storage's product-classification endpoint (see
 // ADR-0010). It is nil-safe: a SealPackage built without it (as every
@@ -37,6 +46,13 @@ type SealPackage struct {
 // must be a Pack task), then scans contents and seals a new Package for the
 // task's order.
 //
+// Before doing any of that, it checks whether a Package has already been
+// sealed for taskId (idempotency guard, see the type doc comment): if one
+// exists, it is returned immediately and Contents/stationId are not
+// re-validated against it — a retried call is a no-op from the caller's
+// perspective, not a second attempt to seal. Ownership (lease) and task
+// existence are still checked on the FIRST call, exactly as before.
+//
 // When ClassificationLookup is wired, each scanned SKU is looked up live
 // before being recorded, and its DOT hazard class (when Hazmat) is checked
 // against every already-scanned item's hazard class for same-package
@@ -49,6 +65,12 @@ type SealPackage struct {
 // pack-time hint from a soft dependency that should not halt an active
 // pack station over a lookup blip. See ADR-0010.
 func (uc *SealPackage) Execute(ctx context.Context, taskId shared.TaskId, stationId shared.StationId, contents []string) (*pack.Package, error) {
+	if existing, err := uc.Packages.FindByTaskId(ctx, taskId); err != nil {
+		return nil, err
+	} else if existing != nil {
+		return existing, nil
+	}
+
 	t, err := uc.Tasks.FindById(ctx, taskId)
 	if err != nil {
 		return nil, err
@@ -64,7 +86,7 @@ func (uc *SealPackage) Execute(ctx context.Context, taskId shared.TaskId, statio
 		return nil, task.ErrNotOwner
 	}
 
-	p := pack.New(uc.NewId(), t.OrderRef(), t.Fragile(), t.GiftWrap())
+	p := pack.New(uc.NewId(), t.OrderRef(), taskId, t.Fragile(), t.GiftWrap())
 	for _, sku := range contents {
 		hazardClass := uc.lookupHazardClass(ctx, sku)
 		if err := p.ScanItemWithClass(sku, hazardClass); err != nil {

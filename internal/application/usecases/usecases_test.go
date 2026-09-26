@@ -468,6 +468,82 @@ func TestSealPackageAndRunSlam_LabelsWithinTolerance(t *testing.T) {
 	}
 }
 
+// The idempotency guard REST_AUDIT.md flags as a known gap: a retried
+// POST /tasks/{id}/seal-package (same taskId, same stationId) must return
+// the ALREADY-sealed Package, not create a second one.
+func TestSealPackage_RetryReturnsExistingPackage_DoesNotCreateDuplicate(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimed, _ := claim.Execute(ctx, "s1", task.Pack)
+
+	ids := idSeq("p")
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return shared.PackageId(ids()) }}
+
+	first, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if err != nil {
+		t.Fatalf("first call: unexpected error: %v", err)
+	}
+
+	second, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-1"})
+	if err != nil {
+		t.Fatalf("retry: unexpected error: %v", err)
+	}
+	if second.Id() != first.Id() {
+		t.Fatalf("expected retry to return the SAME package id %q, got a different one %q", first.Id(), second.Id())
+	}
+
+	// Only one Package was ever actually saved — the memory repo is keyed
+	// by id, so a duplicate Save under a different id would leave both
+	// discoverable; assert there is exactly one via a fresh FindByTaskId,
+	// and that its own scanned contents were not re-appended on retry.
+	stored, err := h.packages.FindByTaskId(ctx, claimed.Id())
+	if err != nil {
+		t.Fatalf("FindByTaskId: %v", err)
+	}
+	if stored == nil || stored.Id() != first.Id() {
+		t.Fatalf("expected FindByTaskId to resolve to the original package, got %+v", stored)
+	}
+	if len(stored.ScannedContents()) != 1 {
+		t.Fatalf("expected scanned contents to still have exactly 1 item after retry, got %d", len(stored.ScannedContents()))
+	}
+}
+
+// A different task must never see another task's already-sealed package —
+// the guard is scoped per-taskId, not global.
+func TestSealPackage_IdempotencyIsScopedPerTask(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+	create := &usecases.CreateTask{Tasks: h.tasks, Publisher: h.publisher, Clock: h.clock, NewId: idSeq("t")}
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-1", shared.NewCapabilitySet("pack"), false, false)
+	_, _ = create.Execute(ctx, task.Pack, shared.NewCPT(epoch.Add(time.Hour)), "order-2", shared.NewCapabilitySet("pack"), false, false)
+	_ = h.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack")))
+	_ = h.stations.Save(ctx, station.New("s2", shared.NewCapabilitySet("pack")))
+
+	claim := &usecases.ClaimNext{Tasks: h.tasks, Stations: h.stations, Publisher: h.publisher, Clock: h.clock}
+	claimedA, _ := claim.Execute(ctx, "s1", task.Pack)
+	claimedB, _ := claim.Execute(ctx, "s2", task.Pack)
+
+	ids := idSeq("p")
+	seal := &usecases.SealPackage{Tasks: h.tasks, Packages: h.packages, Publisher: h.publisher, Clock: h.clock, NewId: func() shared.PackageId { return shared.PackageId(ids()) }}
+
+	pA, err := seal.Execute(ctx, claimedA.Id(), "s1", []string{"sku-a"})
+	if err != nil {
+		t.Fatalf("seal A: unexpected error: %v", err)
+	}
+	pB, err := seal.Execute(ctx, claimedB.Id(), "s2", []string{"sku-b"})
+	if err != nil {
+		t.Fatalf("seal B: unexpected error: %v", err)
+	}
+	if pA.Id() == pB.Id() {
+		t.Fatalf("expected two distinct tasks to produce two distinct packages, got the same id %q for both", pA.Id())
+	}
+}
+
 // SealPackage derives Package.FragileHandling from the owning task's
 // Fragile flag rather than accepting it as a separate caller-supplied
 // argument — the flag rides in on the Task (stamped by wes-work-planning at
@@ -1011,7 +1087,7 @@ func TestRunSlam_ReturnsErrPackageNotFound(t *testing.T) {
 func TestRunSlam_PropagatesWeighError(t *testing.T) {
 	h := newHarness()
 	ctx := context.Background()
-	p := pack.New("p1", "order-1", false, false)
+	p := pack.New("p1", "order-1", "task-1", false, false)
 	_ = h.packages.Save(ctx, p)
 
 	slam := &usecases.RunSlam{Packages: h.packages, Publisher: h.publisher, Clock: h.clock}
@@ -1024,7 +1100,7 @@ func TestRunSlam_PropagatesWeighError(t *testing.T) {
 func TestRunSlam_PropagatesSaveError(t *testing.T) {
 	ctx := context.Background()
 	packages := newErrPackageRepo()
-	p := pack.New("p1", "order-1", false, false)
+	p := pack.New("p1", "order-1", "task-1", false, false)
 	_ = p.ScanItem("sku-1")
 	_ = p.Seal()
 	_ = packages.Save(ctx, p)
@@ -1040,7 +1116,7 @@ func TestRunSlam_PropagatesSaveError(t *testing.T) {
 func TestRunSlam_PropagatesPublishError_LabelApplied(t *testing.T) {
 	ctx := context.Background()
 	packages := memory.NewPackageRepo()
-	p := pack.New("p1", "order-1", false, false)
+	p := pack.New("p1", "order-1", "task-1", false, false)
 	_ = p.ScanItem("sku-1")
 	_ = p.Seal()
 	_ = packages.Save(ctx, p)
@@ -1055,7 +1131,7 @@ func TestRunSlam_PropagatesPublishError_LabelApplied(t *testing.T) {
 func TestRunSlam_PropagatesPublishError_Diverted(t *testing.T) {
 	ctx := context.Background()
 	packages := memory.NewPackageRepo()
-	p := pack.New("p1", "order-1", false, false)
+	p := pack.New("p1", "order-1", "task-1", false, false)
 	_ = p.ScanItem("sku-1")
 	_ = p.Seal()
 	_ = packages.Save(ctx, p)
