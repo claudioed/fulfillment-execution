@@ -70,8 +70,11 @@ rather than in the domain.**
 
 ### The catalogue and the `type` convention
 
-`apis/asyncapi.yaml` (AsyncAPI 2.6.0) documents **all nine** domain events as
-the published catalogue, with each message stating its current publication
+`apis/asyncapi.yaml` (AsyncAPI 2.6.0) documents **eleven of the thirteen**
+domain events as the published catalogue (the two Rebin events,
+`ItemArrivedAtRebin` and `OrderConsolidated`, are in-process only and not in
+the spec — see the [Events page](../api-reference/events.md)), with each
+message stating its current publication
 status. Event types follow the platform-wide convention:
 
 ```
@@ -142,10 +145,13 @@ convention rather than a local improvisation.
   the topic name changes too. Spectral validates the spec's internal
   consistency, not the code's conformance to it, so nothing catches this
   automatically.
-- **Only one of nine events is actually published.** The catalogue documents
-  the full domain-event set; eight are in-process only. That is honest in the
-  spec and on the [Events page](../api-reference/events.md), but a consumer
-  reading the catalogue alone could over-estimate what is available.
+- **Three of thirteen domain events are actually published.** The catalogue
+  documents eleven of the thirteen (two Rebin events are in-process only and
+  not in `asyncapi.yaml` at all); of those eleven, `TaskCompleted`,
+  `TaskCPTMissed`, and `PackageManifested` are actually on the wire — the
+  other eight are in-process only. That is honest in the spec and on the
+  [Events page](../api-reference/events.md), but a consumer reading the
+  catalogue alone could over-estimate what is available.
 - **Eventual consistency between contexts.** Work Planning's view of
   completion lags reality by the publish-plus-consume latency. Acceptable
   here, but it is a real property of the design.
