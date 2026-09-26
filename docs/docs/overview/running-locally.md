@@ -10,7 +10,13 @@ description: Run the service in-memory in one command, or with Postgres and the 
 
 ## In-memory — no infrastructure needed
 
+Every mode needs a process-path catalogue first: `cmd/execution` loads
+`PATH_CATALOGUE_FILE` (default `/etc/fulfillment-execution/process-paths.yaml`)
+at boot and exits if it is missing or invalid
+([ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md)). Point it at the fleet catalogue in `warehouse-infra`:
+
 ```bash
+export PATH_CATALOGUE_FILE=~/warehouse-systems/warehouse-infra/config/process-paths/sortable-fc.yaml
 go run ./cmd/execution
 ```
 
@@ -41,10 +47,14 @@ migrate -path migrations -database "$DATABASE_URL" up
 | `HTTP_ADDR` | `:8080` | HTTP listen address |
 | `DATABASE_URL` | *(unset)* | Postgres DSN; unset selects the in-memory adapters |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated broker list, used by both the `WorkReleased` consumer and the `TaskCompleted` publisher |
-| `EVENT_PUBLISHER` | `log` | `log` writes domain events to stdout; `kafka` additionally publishes `TaskCompleted` to `warehouse.fulfillment.events` |
+| `EVENT_PUBLISHER` | `log` | `log` writes domain events to stdout; `kafka` additionally publishes `TaskCompleted`, `TaskCPTMissed` and `PackageManifested` to `warehouse.fulfillment.events` |
+| `PATH_CATALOGUE_SOURCE` | `file` | `file` loads `PATH_CATALOGUE_FILE`; `kafka` replays the catalogue from `warehouse.process-path-management.events` ([ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md)) |
+| `PATH_CATALOGUE_FILE` | `/etc/fulfillment-execution/process-paths.yaml` | Process-path catalogue YAML. **Required for `go run`**: a missing file is a fatal boot error. Point it at `warehouse-infra`'s `config/process-paths/sortable-fc.yaml` |
+| `PRODUCT_CLASSIFICATION_MODE` | `permissive` | `http` enables the inventory-storage hazard lookup (needs `INVENTORY_STORAGE_BASE_URL`) |
+| `LOCATION_ROLE_MODE` | `permissive` | `http` enables the facility-layout WorkCenter role check (needs `FACILITY_LAYOUT_BASE_URL`) |
 
-A shared Kafka broker for the whole platform runs from
-`~/warehouse-systems/docker-compose.kafka.yml` — this repo deliberately does
+A shared Kafka broker for the whole platform runs in the `warehouse-infra`
+kind cluster (host listener `localhost:9092`) — this repo deliberately does
 **not** define its own broker.
 
 ## Walking the pull-dispatch flow with curl

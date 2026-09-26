@@ -98,6 +98,18 @@ and `ClaimNext` takes the first one the station's capabilities satisfy. The
 selection is therefore "earliest deadline this station can actually do,"
 not "earliest deadline, then fail if the station can't do it."
 
+## A missed CPT is reported, not enforced
+
+A task still open (Pending or Claimed) at or past its CPT is **CPT-missed**
+(`Task.IsCPTMissed(now)`). Nothing in the lifecycle changes when that
+happens — the task stays claimable and completable. Instead, the Clock-driven
+`POST /tasks/sweep-cpt-misses` runs `SweepCPTMisses`, which publishes one
+`TaskCPTMissed` per overdue open task onto `warehouse.fulfillment.events` so
+`order-management` can re-promise the order. Because the sweep changes no
+state, an overdue task re-fires on every pass until it completes; consumers
+deduplicate on `taskId`
+([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)).
+
 ## The Pack path continues into Package
 
 A `PACK` task's completion is not the end of the story — sealing produces a
@@ -107,7 +119,7 @@ A `PACK` task's completion is not the end of the story — sealing produces a
 stateDiagram-v2
     [*] --> Open: SealPackage scans contents
     Open --> Sealed: Seal()<br/>(PackageSealed)
-    Sealed --> Labeled: |actual-expected| ≤ tolerance<br/>(LabelApplied)
+    Sealed --> Labeled: |actual-expected| ≤ tolerance<br/>(LabelApplied + PackageManifested)
     Sealed --> Diverted: |actual-expected| > tolerance<br/>(WeightDiscrepancyDetected + PackageDiverted)
     Labeled --> [*]
     Diverted --> [*]

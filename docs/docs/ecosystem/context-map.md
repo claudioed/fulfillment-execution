@@ -3,13 +3,14 @@ id: context-map
 title: Context map
 sidebar_label: Context map
 sidebar_position: 1
-description: Where Fulfillment Execution sits among the five warehouse-systems services and WCS — what is actually wired over Kafka today versus what is only strategically related.
+description: Where Fulfillment Execution sits among the warehouse-systems services and WCS — what is actually wired over Kafka and HTTP today versus what is only strategically related.
 ---
 
 # Context map
 
-`warehouse-systems` is five Go services, one bounded context each, plus an
-external WCS tier that is not built. This page is honest about the difference
+`warehouse-systems` is a fleet of Go services, one bounded context each, plus
+an external WCS tier that is not built. This page shows this service's own
+edges only. This page is honest about the difference
 between **wired** (a real topic, a real adapter, running code) and
 **strategic** (a real relationship in the domain, with no wire yet).
 
@@ -19,15 +20,17 @@ between **wired** (a real topic, a real adapter, running code) and
 flowchart LR
     subgraph WMS["WMS tier"]
         IS["inventory-storage<br/><i>Core</i><br/>stock ledger, chaotic stow,<br/>revocable reservations"]
+        OM["order-management<br/><i>Core</i><br/>orders, promise, re-promise"]
     end
 
     subgraph WESTIER["WES tier"]
         WP["wes-work-planning<br/><i>Core — the conductor</i><br/>waveless release, flow balancing"]
-        FE["fulfillment-execution<br/><i>Core — THIS SERVICE</i><br/>Pick / Pack / SLAM task lifecycle<br/>pull dispatch + leases"]
+        FE["fulfillment-execution<br/><i>Core — THIS SERVICE</i><br/>Pick / Pack / SLAM / Rebin task lifecycle<br/>pull dispatch + leases"]
     end
 
     subgraph SUPPORT["Supporting / Generic"]
         WFM["workforce-management<br/><i>Supporting</i><br/>heads per path, shift plans"]
+        LP["labor-performance<br/><i>Supporting</i><br/>associate productivity"]
         FL["facility-layout<br/><i>Generic</i><br/>Site→Zone→Aisle→LocationSlot"]
     end
 
@@ -35,24 +38,30 @@ flowchart LR
         WCS["WCS / equipment<br/><i>Generic — buy, don't build</i><br/>conveyors, print-and-apply, checkweighers"]
     end
 
-    IS -->|"warehouse.inventory.events<br/>StockReserved · ReservationRevoked"| WP
-    WFM -->|"warehouse.workforce.events<br/>ShiftPlanCommitted"| WP
     WP ==>|"warehouse.work-planning.events<br/><b>WorkReleased</b>"| FE
     FE ==>|"warehouse.fulfillment.events<br/><b>TaskCompleted</b> (+ work_unit_id)"| WP
+    FE ==>|"warehouse.fulfillment.events<br/><b>TaskCompleted</b>"| LP
+    FE ==>|"warehouse.fulfillment.events<br/><b>TaskCPTMissed · PackageManifested</b>"| OM
+    WFM -->|"HTTP GET /capacity/{capability}"| FE
+    FE -->|"HTTP GET /products/{sku}/classification<br/>(PRODUCT_CLASSIFICATION_MODE=http)"| IS
+    FE -->|"HTTP GET /locations/{code}<br/>(LOCATION_ROLE_MODE=http)"| FL
     FE -.->|"device commands<br/>NOT WIRED"| WCS
-    FL -.->|"no integration today"| WESTIER
 
     classDef this fill:#2b6cb0,stroke:#1a365d,stroke-width:3px,color:#fff
     classDef notwired stroke-dasharray: 6 4
     class FE this
-    class WCS,FL notwired
+    class WCS notwired
 ```
 
-**Bold double arrows** are this service's own two edges, both live and
-exercised by real smoke tests. **Dashed arrows** are relationships that exist
-in the domain but have no code behind them.
+**Bold double arrows** are Kafka edges, live whenever
+`EVENT_PUBLISHER=kafka`. **Single arrows** are synchronous HTTP calls; the
+two outbound ones are opt-in and permissive by default (with the mode unset,
+the lookup is skipped and the request is accepted unchecked). **Dashed
+arrows** are relationships that exist in the domain but have no code behind
+them. Upstream edges between *other* services (e.g. inventory-storage →
+work-planning) are omitted — see each service's own context map.
 
-## This service's two real edges
+## The control loop with Work Planning
 
 ### 1. Inbound — `WorkReleased` from `wes-work-planning`
 
@@ -74,7 +83,9 @@ in the domain but have no code behind them.
 - **Payload:** `task_id`, `station_id`, and `work_unit_id` — the last
   backfilled via a `TaskRepo` lookup of the task's `OrderRef()`
 - **Downstream:** `wes-work-planning` consumes it and calls its own
-  `RecordCompletion(workUnitId)`
+  `RecordCompletion(workUnitId)`; `labor-performance` also consumes it for
+  per-associate attribution (the event carries the claiming associate,
+  ADR-0014)
 
 Together these two edges form a closed loop: Work Planning releases, this
 service executes, Work Planning learns that it landed. The repo's integration
@@ -103,52 +114,59 @@ sequenceDiagram
     WP->>WP: RecordCompletion(work_unit_id)
 ```
 
+## The other live edges
+
+### Outbound — `TaskCPTMissed` / `PackageManifested` to `order-management`
+
+Same topic, same publisher. `TaskCPTMissed` is raised by the Clock-driven
+`POST /tasks/sweep-cpt-misses` sweep for every still-open task past its CPT;
+`PackageManifested` is raised when SLAM labels a package. Order
+Management's `RepromiseOrder` consumer uses them to close its promise
+feedback loop — see [ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md).
+
+### Inbound HTTP — `workforce-management` reads installed capacity
+
+`workforce-management` calls `GET /capacity/{capability}` to learn how many
+registered stations can serve a capability, so shift planning is bounded by
+physical station count ([ADR-0018](../adr/0018-installed-capacity-read-endpoint.md)).
+It is a read of this service's `Station` pool, not a shared model: there is
+still no roster here — `Station` holds capabilities and an opaque
+`OccupantId`, and Workforce Management still stops at the process-path
+boundary. The two contexts change at different cadences (shifts versus
+seconds) and share only the published language of capability names.
+
+### Outbound HTTP — `inventory-storage` hazard classification (opt-in)
+
+With `PRODUCT_CLASSIFICATION_MODE=http` and `INVENTORY_STORAGE_BASE_URL`
+set, `SealPackage` looks up each SKU's DOT hazard class via
+`GET /products/{sku}/classification` to enforce package segregation
+([ADR-0010](../adr/0010-package-segregation-and-sort-lane.md)).
+Everything else about stock still reaches this service only transitively,
+through what Work Planning chooses to release.
+
+### Outbound HTTP — `facility-layout` WorkCenter role check (opt-in)
+
+With `LOCATION_ROLE_MODE=http` and `FACILITY_LAYOUT_BASE_URL` set,
+`RegisterStation` resolves an optional station `locationCode` via
+`GET /locations/{locationCode}` and rejects a known non-WorkCenter role
+([ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md)).
+A `Task` still carries no location — it says *what* work and *by when*,
+never *where*.
+
 ## What is deliberately not wired
 
 ### `warehouse-console` — a browser client, not a bounded-context edge
 
-This service also gained a `GET /tasks?orderRef=` read endpoint, a `web/`
+This service also exposes a `GET /tasks?orderRef=` read endpoint, a `web/`
 Module Federation remote (`fulfillment-mfe`), and CORS middleware, all as
 this repo's local adoption of the fleet-wide micro-frontend console
 architecture (canonical decision in `warehouse-ops-agent`'s own ADR-0002;
 this repo's adoption side is [ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md)).
 `warehouse-console` is not drawn as a bounded context in the diagram above —
-it is a browser SPA that composes this service's own remote alongside the
-other five, plus a BFF hosted in `warehouse-ops-agent` for the one
-cross-cutting Order Lifecycle screen. It calls this service's REST API over
-HTTP exactly like any other client; it has no domain model of its own and
-no wire-level relationship worth drawing as a context-mapping edge.
-
-### `workforce-management` — no edge, on purpose
-
-There is no topic, no HTTP call, no shared type between these two services,
-and that absence is the design rather than an omission.
-
-Workforce Management owns "who is on shift, on which process path, at what
-rate," and **stops at the process-path boundary** — its own charter states it
-"never links an associate to a specific task." From this side, `Station` holds
-capabilities and an opaque `OccupantId`, with no roster behind it.
-
-Both sides give the same reason: the two contexts change at **completely
-different cadences** — shifts versus seconds. The only thing they share is a
-*published language* for capability names (`pick`, `pack`, `slam`), which the
-`WorkReleased` consumer uses when deriving required capabilities.
-
-### `inventory-storage` — indirect only
-
-Stock reality reaches this service transitively. `inventory-storage` publishes
-`StockReserved` / `ReservationRevoked`; `wes-work-planning` projects them into
-its `UsableInventoryObserved` read model and factors them into *what it
-releases*. By the time a `WorkReleased` event arrives here, that decision is
-already made. A `Task` carries an `orderRef`, never a SKU or a bin.
-
-### `facility-layout` — no relationship at all
-
-`facility-layout` is the newest service and currently has **no live
-integration with any of the other four** — an in-process log publisher, no
-AsyncAPI spec. This service has no notion of physical location: a `Task` says
-*what* work and *by when*, never *where*. There is no edge in either
-direction, and none is drawn as if there were.
+it is a browser SPA that composes this service's remote alongside the other
+services' remotes, plus a BFF hosted in `warehouse-ops-agent`. It calls this
+service's REST API over HTTP like any other client and has no domain model
+of its own.
 
 ### WCS / equipment — strategic, not built
 
@@ -175,12 +193,14 @@ Full reasoning on [Context relationships](../ddd/context-relationships.md).
 
 | Edge | Context-mapping pattern | Wired? |
 | --- | --- | --- |
-| `wes-work-planning` → this | Customer/Supplier, with an ACL on this side | **Yes** |
-| this → `wes-work-planning` | Customer/Supplier (feedback edge) | **Yes** |
+| `wes-work-planning` → this | Customer/Supplier, with an ACL on this side | **Yes** (Kafka) |
+| this → `wes-work-planning` | Customer/Supplier (feedback edge) | **Yes** (Kafka) |
+| this → `labor-performance` | Published Language (`TaskCompleted`) | **Yes** (Kafka) |
+| this → `order-management` | Published Language (`TaskCPTMissed`, `PackageManifested`) | **Yes** (Kafka) |
+| `workforce-management` → this | Open Host Service (`GET /capacity/{capability}`) | **Yes** (HTTP) |
+| this → `inventory-storage` | Customer/Supplier, ACL on this side | Opt-in (HTTP) |
+| this → `facility-layout` | Customer/Supplier, ACL on this side | Opt-in (HTTP) |
 | this → WCS | Customer/Supplier + Conformist behind an ACL | No |
-| this ↔ `workforce-management` | Published Language (capability names) only | No |
-| `inventory-storage` → this | Indirect, via Work Planning | No direct edge |
-| `facility-layout` ↔ this | None | No |
 
 ## Why the WES tier is two services, not one
 

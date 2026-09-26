@@ -3,12 +3,12 @@ id: integration-contracts
 title: Integration contracts
 sidebar_label: Integration contracts
 sidebar_position: 2
-description: The exact topics, envelopes, mappings, idempotency guarantees and configuration behind this service's two live Kafka edges.
+description: The exact topics, envelopes, mappings, idempotency guarantees and configuration behind this service's live Kafka edges.
 ---
 
 # Integration contracts
 
-The operational detail behind the two live edges on the
+The operational detail behind the Kafka edges on the
 [Context map](./context-map.md). Everything here is taken from the adapter
 code and `INTEGRATION.md`, not from intent.
 
@@ -17,13 +17,14 @@ code and `INTEGRATION.md`, not from intent.
 | Direction | Topic | Event | Adapter |
 | --- | --- | --- | --- |
 | Consume | `warehouse.work-planning.events` | `WorkReleased` | `internal/adapters/inbound/kafka/consumer.go` |
-| Publish | `warehouse.fulfillment.events` | `TaskCompleted` | `internal/adapters/outbound/kafka/publisher.go` |
+| Publish | `warehouse.fulfillment.events` | `TaskCompleted`, `TaskCPTMissed`, `PackageManifested` | `internal/adapters/outbound/kafka/publisher.go` |
+| Consume (opt-in) | `warehouse.process-path-management.events` | process-path catalogue events | `internal/adapters/outbound/kafkacatalog` — only when `PATH_CATALOGUE_SOURCE=kafka` |
 
 Client library on both sides: `github.com/segmentio/kafka-go` (pure Go, no
 cgo). Broker list comes from `KAFKA_BROKERS`, default `localhost:9092`.
 
-A shared broker for the whole platform runs from
-`~/warehouse-systems/docker-compose.kafka.yml`. This repo's own
+A shared broker for the whole platform runs in the `warehouse-infra` kind
+cluster, exposed on the host at `localhost:9092`. This repo's own
 `docker-compose.yml` deliberately defines **only Postgres** — adding a second
 broker would fragment the platform's integration testing.
 
@@ -31,7 +32,7 @@ broker would fragment the platform's integration testing.
 
 ### Envelope
 
-The flat platform envelope, identical across the four integrating services:
+The flat platform envelope shared across the fleet's integrating services:
 
 ```json
 {
@@ -43,19 +44,24 @@ The flat platform envelope, identical across the four integrating services:
     "path_id": "pick-zone-a",
     "work_unit_id": "wu-8a1f",
     "cpt": "2026-08-23T18:00:00Z",
-    "ref": "order-4471"
+    "ref": "order-4471",
+    "fragile": false,
+    "gift_wrap": false
   }
 }
 ```
+
+`fragile` and `gift_wrap` are optional packing hints (default `false`).
 
 ### The translation (Anti-Corruption Layer)
 
 | From | To | How |
 | --- | --- | --- |
-| `data.path_id` | `task.Type` | prefix convention — see caution below |
+| `data.path_id` | `task.Type` | process-path catalogue lookup, longest `matchPrefix` wins — see below |
 | `data.work_unit_id` | `shared.OrderRef` | direct |
 | `data.cpt` | `shared.CPT` | RFC 3339 timestamp |
-| *(derived from type)* | `shared.CapabilitySet` | `PICK`→`{pick}`, `PACK`→`{pack}`, `SLAM`→`{slam}` |
+| *(from the matched path)* | `shared.CapabilitySet` | the path definition's `requiredCapabilities` |
+| `data.fragile` / `data.gift_wrap` | `Task.Fragile` / `Task.GiftWrap` | direct, default `false` |
 | `data.ref` | — | decoded, not mapped |
 
 The consumer then calls the **existing** `CreateTask` use case. No new use
@@ -63,21 +69,20 @@ case was introduced for the Kafka path — creating a task from released work
 *is* what `CreateTask` is for, and giving the Kafka path its own parallel use
 case would have meant two code paths that must stay in agreement.
 
-:::caution The `path_id` prefix convention is a known simplification
-`deriveTaskType` maps `pick-*` → `PICK`, `pack-*` → `PACK`, `slam-*` → `SLAM`,
-and **defaults to `PICK`** when no prefix matches.
+:::info `path_id` resolves through the process-path catalogue
+Since [ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md) the consumer calls `PathCatalogue.Lookup(path_id)`:
+the **longest** declared `matchPrefix` that prefixes the id (case-insensitive)
+wins, and the matched definition supplies both the task type (its `id`, e.g.
+`PICK`, `PACK`, `SLAM`, `REBIN`) and the required capabilities. A `path_id`
+that matches nothing is a **hard error** — the message is not acked as a
+silent Pick task, which is what the retired prefix-guessing code used to do.
 
-`path_id` does not carry the task type in general. This convention is a
-documented shortcut for the current round of integration, called out in
-`INTEGRATION.md`, the repo README, and here. Two consequences worth naming:
-
-- A malformed or unrecognised `path_id` silently produces a **Pick** task
-  rather than an error or a dead letter.
-- Adding a fourth process path would require changing this function and the
-  upstream naming convention together.
-
-A durable version would need either an explicit `task_type` field on
-`WorkReleased` or a lookup against a process-path registry.
+The catalogue comes from `PATH_CATALOGUE_SOURCE`: `file` (default) loads
+`PATH_CATALOGUE_FILE` once at boot; `kafka` replays
+`warehouse.process-path-management.events` into memory and follows live
+changes. The `warehouse-infra` kind cluster runs the `kafka` source; its
+`config/process-paths/sortable-fc.yaml` is kept only as the rollback target
+and as a handy file for local `go run`.
 :::
 
 ### Idempotency
