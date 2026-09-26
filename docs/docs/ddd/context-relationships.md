@@ -3,7 +3,7 @@ id: context-relationships
 title: Bounded-context relationships
 sidebar_label: Context relationships
 sidebar_position: 5
-description: How this bounded context relates to the other four services and to WCS, using Evans/Vernon context-mapping vocabulary — Customer/Supplier, Open Host Service, Published Language, Conformist, Anti-Corruption Layer.
+description: How this bounded context relates to the other warehouse-systems services and to WCS, using Evans/Vernon context-mapping vocabulary — Customer/Supplier, Open Host Service, Published Language, Conformist, Anti-Corruption Layer.
 ---
 
 # Bounded-context relationships
@@ -42,15 +42,15 @@ model. Neither side can do its job without the other's signal — that is the
 Customer/Supplier shape, not a one-way conformity.
 
 **The ACL is real, not nominal.** `internal/adapters/inbound/kafka/consumer.go`
-decodes the envelope and extracts exactly three scalars, mapping each into this
-context's own vocabulary:
+decodes the envelope and maps its fields into this context's own vocabulary:
 
 | From `WorkReleased.data` | Becomes | Via |
 | --- | --- | --- |
-| `path_id` | `task.Type` | prefix convention `pick-*` / `pack-*` / `slam-*`, defaulting to `PICK` |
+| `path_id` | `task.Type` | process-path catalogue, longest `matchPrefix` wins; unknown id is a hard error ([ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md)) |
 | `work_unit_id` | `shared.OrderRef` | direct |
 | `cpt` | `shared.CPT` | `shared.NewCPT` |
-| *(derived from type)* | `shared.CapabilitySet` | `PICK`→`pick`, `PACK`→`pack`, `SLAM`→`slam` |
+| *(from the matched path)* | `shared.CapabilitySet` | the path definition's `requiredCapabilities` |
+| `fragile`, `gift_wrap` | `Task.Fragile`, `Task.GiftWrap` | direct, optional (default `false`) |
 
 Note that `data.ref` is decoded but **not** used — the deliberate choice was
 `work_unit_id` as the correlation key, because that is what Work Planning's
@@ -96,10 +96,19 @@ is drawn on the context map because it is the real strategic shape of the
 system, and it is labelled as not-yet-built rather than implied to exist.
 :::
 
-### `workforce-management` ↔ `fulfillment-execution` — **no technical edge; a deliberate boundary**
+### `fulfillment-execution` → `labor-performance` and `order-management` — **Published Language**
 
-There is no Kafka topic, no HTTP call, and no shared type between these two
-services. That absence is the design.
+The same integration topic carries more than the Work Planning feedback edge.
+`labor-performance` consumes `TaskCompleted` for per-associate attribution
+(the claiming associate is carried on the wire,
+[ADR-0014](../adr/0014-labor-performance-integration-hooks.md)).
+`order-management`'s `RepromiseOrder` consumer reads `TaskCPTMissed` and
+`PackageManifested` to close its promise feedback loop
+([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)). Neither
+downstream is consulted about this service's model; they read the published
+event catalogue as-is — Published Language, not Customer/Supplier.
+
+### `workforce-management` → `fulfillment-execution` — **Open Host Service (one read)**
 
 `workforce-management` owns "who is on shift, on which process path, at what
 rate." It **stops at the path boundary** — its own charter says it "never links
@@ -108,44 +117,45 @@ station belongs to Fulfillment Execution." From this side, the mirror-image
 rule holds: `Station.occupant` is an opaque `OccupantId` with no roster, no
 certifications, no shift window behind it.
 
-The stated reason on both sides is the same: the two contexts change at
-**completely different cadences** — shifts versus seconds. Coupling them would
-mean a dispatch-policy change had to be reasoned about in terms of shift
-planning, and vice versa.
+The one technical edge is a read:
+[ADR-0018](../adr/0018-installed-capacity-read-endpoint.md) added
+`GET /capacity/{capability}`, which returns how many registered stations can
+serve a capability so shift plans are bounded by physical station count.
+That is an Open Host read of this service's own `Station` pool — no shared
+type, no event, and no coupling of dispatch to shift planning. The two
+contexts still change at **completely different cadences** — shifts versus
+seconds.
 
-The one thing they share is a **published language** for capability names —
-`pick`, `pack`, `slam`. The `WorkReleased` consumer derives required
-capabilities "matching the capability names Workforce Management uses." That is
-a shared *vocabulary*, not a shared type, which is exactly what Published
-Language means.
+They also share a **published language** for capability names — `pick`,
+`pack`, `slam`, `rebin` — declared once in the process-path catalogue. That is
+a shared *vocabulary*, not a shared type.
 
-### `inventory-storage` ↔ `fulfillment-execution` — **indirect only**
+### `fulfillment-execution` → `inventory-storage` — **Customer/Supplier + ACL (one opt-in lookup)**
 
-`inventory-storage` is the WMS-tier authority on stock reality — chaotic stow,
-bin-accurate location, revocable reservations. It publishes `StockReserved`
-and `ReservationRevoked` to `warehouse.inventory.events`.
+`inventory-storage` is the WMS-tier authority on stock reality. This service
+does **not** consume its events: stock reality reaches it transitively, via
+what `wes-work-planning` chooses to release. A `Task` carries an `orderRef`,
+never a bin.
 
-This service does **not** consume that topic. Stock reality reaches it
-transitively: `wes-work-planning` projects those events into its own
-`UsableInventoryObserved` read model and factors them into *what it releases* —
-by which point, from this context's perspective, the decision is already made.
-A `Task` carries an `orderRef`, never a SKU or a bin.
+The one direct edge is a synchronous read of product classification: with
+`PRODUCT_CLASSIFICATION_MODE=http`, `SealPackage` asks
+`GET /products/{sku}/classification` for each scanned SKU's DOT hazard class
+to enforce package segregation
+([ADR-0010](../adr/0010-package-segregation-and-sort-lane.md)). The response is
+translated into a local `ClassificationInfo` at the port; the default
+permissive adapter skips the lookup entirely.
 
-That is the correct shape. If this service consumed inventory events it would
-have to form an opinion about stock truth, which is another context's Core.
+### `fulfillment-execution` → `facility-layout` — **Conformist behind an ACL (one opt-in lookup)**
 
-### `facility-layout` ↔ `fulfillment-execution` — **no relationship today**
-
-`facility-layout` is the newest service, a **Generic Subdomain** owning the
-physical warehouse map: the Site-Area-Zone-Aisle-Bay-Level-Position hierarchy
-and placement rules. It is intended as an **Open Host Service** other contexts
-conform to for physical-location truth.
-
-It currently has **no live integration with any of the other four services** —
-it has only an in-process log publisher and no AsyncAPI spec at all. And this
-service has no notion of location: a `Task` says *what* work and *by when*,
-never *where*. There is no edge to describe, in either direction, and none is
-drawn as if there were.
+`facility-layout` is a **Generic Subdomain** owning the physical warehouse
+map, intended as an **Open Host Service** for physical-location truth. A
+`Station` may now carry an optional `locationCode`; with
+`LOCATION_ROLE_MODE=http`, `RegisterStation` resolves it via
+`GET /locations/{locationCode}` and rejects a known non-WorkCenter role
+([ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md)).
+This service conforms to facility-layout's location vocabulary for that one
+check, translated at `ports.LocationRoleLookup`. A `Task` still says *what*
+work and *by when*, never *where*.
 
 ## Summary
 
@@ -153,7 +163,9 @@ drawn as if there were.
 | --- | --- | --- |
 | `wes-work-planning` → this | Customer/Supplier, ACL on this side | **Yes** — Kafka `warehouse.work-planning.events` |
 | this → `wes-work-planning` | Customer/Supplier (feedback) | **Yes** — Kafka `warehouse.fulfillment.events` |
+| this → `labor-performance` | Published Language | **Yes** — Kafka `warehouse.fulfillment.events` (`TaskCompleted`) |
+| this → `order-management` | Published Language | **Yes** — Kafka `warehouse.fulfillment.events` (`TaskCPTMissed`, `PackageManifested`) |
+| `workforce-management` → this | Open Host Service | **Yes** — HTTP `GET /capacity/{capability}` |
+| this → `inventory-storage` | Customer/Supplier, ACL on this side | Opt-in — HTTP classification lookup |
+| this → `facility-layout` | Conformist behind ACL | Opt-in — HTTP location-role lookup |
 | this → WCS / equipment | Customer/Supplier + Conformist behind ACL | No — strategic only |
-| this ↔ `workforce-management` | Published Language (capability names) only | No — deliberate boundary |
-| `inventory-storage` → this | Indirect, via Work Planning | No direct edge |
-| `facility-layout` ↔ this | None | No |

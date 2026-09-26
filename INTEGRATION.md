@@ -1,5 +1,14 @@
 # Cross-service integration (additive — Task 7, do NOT touch existing domain code)
 
+> **Historical brief.** This is the original task spec for the first Kafka
+> integration and is kept for context. Parts of it are superseded: the
+> `path_id`-prefix mapping with a default-to-Pick was replaced by the
+> process-path catalogue (ADR-0017 — an unknown `path_id` is now a hard
+> error), and the publisher now also emits `TaskCPTMissed` and
+> `PackageManifested` (ADR-0025). For the current contract see
+> `.claude/rules/api-and-integration.md` or the docs site's
+> *Integration contracts* page.
+
 This service CONSUMES `WorkReleased` from wes-work-planning and turns each one
 into a Task via the existing `CreateTask` use case — this IS the intended use
 of that use case, so call it directly (no new use case needed). Strictly
@@ -21,8 +30,8 @@ additive: new adapter only, no change to existing aggregates/invariants.
 
 - Client library: `github.com/segmentio/kafka-go`.
 - Broker: `KAFKA_BROKERS` env var (default `localhost:9092`). A shared broker
-  already runs via `~/warehouse-systems/docker-compose.kafka.yml` — connect to
-  it, do not add your own Kafka service to this repo's docker-compose.yml.
+  already runs in the `warehouse-infra` kind cluster (host listener
+  `localhost:9092`) — connect to it, do not add your own Kafka service to this repo's docker-compose.yml.
 - New inbound package `internal/adapters/inbound/kafka/` — a consumer on topic
   `warehouse.work-planning.events`, filtering for `event_type == "WorkReleased"`.
 - Mapping: `WorkReleased.data.path_id` → task type is NOT derivable from

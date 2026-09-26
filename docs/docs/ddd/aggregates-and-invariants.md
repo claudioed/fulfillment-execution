@@ -3,7 +3,7 @@ id: aggregates-and-invariants
 title: Aggregates & invariants
 sidebar_label: Aggregates & invariants
 sidebar_position: 2
-description: The three aggregate roots of this bounded context, every invariant each one enforces, the typed error it returns, and the HTTP status it maps to.
+description: The four aggregate roots of this bounded context, every invariant each one enforces, the typed error it returns, and the HTTP status it maps to.
 ---
 
 # Aggregates & invariants
@@ -18,19 +18,22 @@ classDiagram
     class Task {
         <<Aggregate Root>>
         -TaskId id
-        -Type taskType : PICK|PACK|SLAM
+        -Type taskType : PICK|PACK|SLAM|REBIN
         -Status status : PENDING|CLAIMED|COMPLETED
         -CPT cpt
         -OrderRef orderRef
         -CapabilitySet requiredCapabilities
         -Lease* lease
         -bool fragile
+        -bool giftWrap
         +Claim(stationId, capabilities, now, duration) error
         +RenewLease(stationId, now, duration) error
         +Complete(stationId, now) error
         +ExpireLeaseIfDue(now) bool
         +IsAvailable(now) bool
+        +IsCPTMissed(now) bool
         +Fragile() bool
+        +GiftWrap() bool
     }
     class Lease {
         <<Value Object>>
@@ -42,6 +45,7 @@ classDiagram
         -StationId id
         -CapabilitySet capabilities
         -OccupantId* occupant
+        -string locationCode
         +CheckIn(occupant) error
         +CheckOut() error
         +CanAccept(required) bool
@@ -62,9 +66,18 @@ classDiagram
         +FragileHandling() bool
         +SortLane() string
     }
+    class OrderConsolidation {
+        <<Aggregate Root>>
+        -string orderRef
+        -string[] requiredLineIds
+        -set arrivedLineIds
+        +RecordArrival(lineId) error
+        +IsComplete() bool
+    }
     Task *-- Lease : at most one
     Task ..> Station : capability match only
     Package ..> Task : created by a PACK task's seal
+    OrderConsolidation ..> Task : completion creates the PACK task
 ```
 
 `Task` and `Package` are linked only by `OrderRef` — a value, not a reference.
@@ -169,6 +182,18 @@ second is a normal, expected operational event.
 the aggregate does not carry units. In practice the API examples use
 kilograms.
 
+## OrderConsolidation
+
+The Rebin fan-in tracker
+([ADR-0016](../adr/0016-rebin-and-order-consolidation.md)): one per
+`orderRef`, recording which of the order's required lines have arrived at
+the Rebin wall. Execution-scoped only — it does not model the order itself.
+
+| # | Invariant | Enforced in | Error | HTTP |
+| --- | --- | --- | --- | --- |
+| C1 | **Only required lines may arrive.** An arrival for a line outside the order's required set is rejected. | `OrderConsolidation.RecordArrival` | `consolidation.ErrUnknownLine` | `422` |
+| C2 | **Arrivals are idempotent.** Re-recording an arrived line is a no-op, and once complete the PACK task is created exactly once. | `RecordArrival`; `ArriveAtRebin`'s `wasAlreadyComplete` guard | — | — |
+
 ## Consistency boundaries
 
 Each aggregate is one transaction. A use case never mutates two aggregates
@@ -178,6 +203,9 @@ inside one consistency boundary:
   that it is a `PACK` task) but only **writes** the new `Package`.
 - `RunSlam` touches only the `Package`.
 - `CompleteTask` touches only the `Task`.
+- `ArriveAtRebin` writes the `OrderConsolidation` and, on the completing
+  arrival, creates a new PACK `Task` through `CreateTask` — a new aggregate,
+  not a mutation of an existing one — inside the same unit of work.
 
 The cross-aggregate rule "only the station holding the Pack task's claim may
 seal its package" is enforced in the `SealPackage` use case rather than inside

@@ -19,42 +19,57 @@ treated as non-negotiable:
 flowchart TB
     subgraph inbound["Inbound adapters (driving)"]
         HTTP["chi HTTP handlers<br/>internal/adapters/inbound/http"]
-        KIN["Kafka WorkReleased consumer<br/>internal/adapters/inbound/kafka"]
+        KIN["Kafka consumers<br/>WorkReleased + analytics projector<br/>internal/adapters/inbound/kafka"]
+        MCP["MCP tools<br/>internal/adapters/inbound/mcp"]
     end
 
     subgraph app["Application layer"]
-        UC["usecases<br/>one struct per use case"]
-        P["ports<br/>TaskRepo · StationRepo · PackageRepo<br/>EventPublisher · Clock · ProcessedEvents"]
+        UC["usecases<br/>one struct per use case (15)"]
+        P["ports<br/>TaskRepo · StationRepo · PackageRepo · OrderConsolidationRepo<br/>EventPublisher · UnitOfWork · Clock · ProcessedEvents · PathCatalogue<br/>ProductClassificationLookup · LocationRoleLookup · Metrics"]
     end
 
     subgraph domain["Domain (pure Go, zero dependencies)"]
         T["task.Task"]
         S["station.Station"]
         PK["pack.Package"]
-        SH["shared<br/>TaskId · StationId · CPT · Capability · 9 events"]
+        OC["consolidation.OrderConsolidation"]
+        PC["pathcatalog"]
+        SH["shared<br/>TaskId · StationId · CPT · Capability · 13 events"]
     end
 
     subgraph outbound["Outbound adapters (driven)"]
-        PG["postgres<br/>pgxpool repos + golang-migrate"]
+        PG["postgres<br/>pgxpool repos + migrations + transactional outbox"]
         MEM["memory<br/>thread-safe repos, SystemClock"]
-        EV["events<br/>log / buffered publisher"]
-        KOUT["Kafka TaskCompleted publisher"]
+        EV["events<br/>log / buffered / multi publisher"]
+        KOUT["kafka<br/>integration + analytics publishers"]
+        HTTPOUT["productclassification · facilitylayout<br/>HTTP lookups (permissive by default)"]
+        CAT["filecatalog · kafkacatalog<br/>process-path catalogue sources"]
     end
 
     HTTP --> UC
     KIN --> UC
+    MCP --> UC
     UC --> P
     UC --> T
     UC --> S
     UC --> PK
+    UC --> OC
     T --> SH
     S --> SH
     PK --> SH
+    OC --> SH
     PG -.implements.-> P
     MEM -.implements.-> P
     EV -.implements.-> P
     KOUT -.implements.-> P
+    HTTPOUT -.implements.-> P
+    CAT -.loads.-> PC
 ```
+
+The analytics read side (`cmd/fulfillment-projector`,
+`cmd/fulfillment-reports`, `internal/analytics/report`,
+`outbound/analyticsstore`) follows the same layering against a separate
+analytical database — see [Throughput report](../analytics/throughput-report.md).
 
 Solid arrows are compile-time dependencies; dotted arrows are interface
 implementations, which is where the arrows get inverted — the outbound
@@ -63,29 +78,42 @@ adapters depend on `ports`, never the reverse.
 ## Package map
 
 ```
-cmd/execution/                 main.go — the composition root, the only place
+cmd/execution/                 main.go — the OLTP composition root, the only place
                                that knows both a pgxpool and a use case exist
+cmd/fulfillment-projector/     analytics WRITER: analytics topic -> analytical DB
+cmd/fulfillment-reports/       analytics READ-ONLY reader: GET /reports/...
+cmd/mcp/                       MCP server (Streamable HTTP)
 internal/
   domain/
-    task/                      Task aggregate (Pick|Pack|SLAM lifecycle, lease)
-    station/                   Station aggregate (occupant, capabilities)
-    package/                   Package aggregate (seal, SLAM weigh-check)
-    shared/                    TaskId, StationId, CPT, Capability, 9 domain events
+    task/                      Task aggregate (Pick|Pack|SLAM|Rebin lifecycle, lease, CPT-missed)
+    station/                   Station aggregate (occupant, capabilities, locationCode)
+    package/                   Package aggregate (seal, segregation, SLAM weigh-check)
+    consolidation/             OrderConsolidation — Rebin fan-in tracker
+    pathcatalog/               process-path catalogue model (prefix-match lookup)
+    shared/                    TaskId, StationId, CPT, Capability, 13 domain events
+  analytics/report/            analytical read model + store ports
   application/
-    ports/                     OUT interfaces: TaskRepo, StationRepo, PackageRepo,
-                               EventPublisher, Clock, ProcessedEvents
-    usecases/                  one struct per use case (9 of them)
+    ports/                     OUT interfaces (see Use cases & ports)
+    usecases/                  one struct per use case (15 of them)
   adapters/
     inbound/http/              chi router, handlers, DTOs, RFC 7807 error mapping
-    inbound/kafka/             WorkReleased consumer with idempotency
-    outbound/postgres/         pgxpool repos + migration runner
+    inbound/kafka/             WorkReleased consumer + analytics projector consumer
+    inbound/mcp/               MCP tools (curated, governance-tested)
+    outbound/postgres/         pgxpool repos + migrations + transactional outbox
     outbound/memory/           in-memory repos for tests and local runs
-    outbound/events/           log / buffered publisher
-    outbound/kafka/            TaskCompleted publisher
+    outbound/events/           log / buffered / multi publisher
+    outbound/kafka/            integration + analytics publishers
+    outbound/analyticsstore/   analytical DB writer + read-only reader
+    outbound/filecatalog/      process-path catalogue file loader
+    outbound/kafkacatalog/     process-path catalogue Kafka replay
+    outbound/productclassification/  inventory-storage hazard lookup (opt-in)
+    outbound/facilitylayout/   facility-layout location-role lookup (opt-in)
+  observability/               OpenTelemetry traces, metrics, slog
   architecture/                arch-go fitness tests (test-only package)
-migrations/                    golang-migrate SQL files
+migrations/                    golang-migrate SQL files (+ migrations/analytics/)
 apis/                          openapi.yaml + asyncapi.yaml (the published contracts)
 features/                      Gherkin acceptance specs, run by godog
+web/                           fulfillment-mfe Module Federation remote
 charts/fulfillment-execution/  Helm chart
 ```
 
@@ -95,9 +123,10 @@ language, and only the Go identifier bends.
 
 ## The dependency rule is executable, not aspirational
 
-`internal/architecture/architecture_test.go` encodes the rule as real Go tests
+`internal/architecture/` encodes the rule as real Go tests
 using [arch-go](https://github.com/arch-go/arch-go) — the Go equivalent of
-ArchUnit. Five subtests run on every push in the `arch-test` CI job:
+ArchUnit. Seven subtests (five in `architecture_test.go`, two MCP-specific in
+`fitness_test.go`) run on every push in the `arch-test` CI job:
 
 | Subtest | What it forbids |
 | --- | --- |
@@ -106,6 +135,8 @@ ArchUnit. Five subtests run on every push in the `arch-test` CI job:
 | `inbound adapters do not depend on outbound adapters` | The HTTP layer talking to pgx directly |
 | `outbound adapters do not depend on inbound adapters` | A repo importing an HTTP DTO |
 | `only cmd wires every layer together` | Wiring leaking out of the composition root |
+| `mcp adapter depends only on application and domain` | MCP tools reaching into other adapters |
+| `nothing else depends on the mcp adapter` | Other packages importing MCP tool code |
 
 Rationale and the alternatives considered are in
 [ADR-0001](../adr/0001-hexagonal-ports-and-adapters.md) and

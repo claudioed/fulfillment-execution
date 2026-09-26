@@ -30,6 +30,16 @@ UTC hour the row aggregates. Metrics per row:
 | `avgClaimToCompleteSeconds` | Mean seconds from a task's claim to its completion, over completions that had a recorded claim. |
 | `leaseExpiries` | Count of `LeaseExpired` (unconfirmed claims that timed out back to the pool). |
 | `weighCheckDiverts` | Count of `WeightDiscrepancyDetected` (SLAM weigh-check diversions). |
+| `packagesManifested` | Count of `PackageManifested` attributed to the bucket ([ADR-0026](../adr/0026-on-time-to-cpt-kpi.md)). |
+| `packagesOnTimeToCPT` | Of those, manifested at or before the originating SLAM task's CPT (`manifestedAt <= cpt`). |
+| `packagesLateToCPT` | Of those, manifested after the CPT. |
+
+The three on-time-to-CPT counts are raw counts, never a stored rate, so they
+sum correctly across rows. They are populated on **SLAM rows only**: a
+`PackageManifested` is correlated to its order's SLAM task via
+`TaskRepo.FindByOrderRef`, and the row is that task's `(SLAM, station,
+manifest hour)`. When no SLAM task resolves, the event is marked processed
+but not projected.
 
 ## Inputs (analytics topic events)
 
@@ -42,12 +52,14 @@ topic, separate from the integration topic — Envelope v1):
 | `TaskCompleted` | `completions`, claim→complete latency |
 | `LeaseExpired` | `leaseExpiries` |
 | `WeightDiscrepancyDetected` | `weighCheckDiverts` |
+| `PackageManifested` | `packagesManifested`, `packagesOnTimeToCPT` / `packagesLateToCPT` (publisher enriches with the SLAM task's type, station and on-time verdict) |
 
 `task_type` is enriched onto task-scoped events by the publisher via a `TaskRepo`
 lookup (the domain events themselves stay thin). `TaskCreated`, `ItemPicked`,
 `PackageSealed`, `LabelApplied`, and `PackageDiverted` are published to the topic
 but do not currently move this report; the projector acknowledges them without
-projecting.
+projecting. `TaskCPTMissed` and the two Rebin events are not published to the
+analytics topic at all.
 
 ## Interface
 
@@ -75,7 +87,10 @@ Response (`200`):
       "completions": 42,
       "avgClaimToCompleteSeconds": 73.5,
       "leaseExpiries": 1,
-      "weighCheckDiverts": 0
+      "weighCheckDiverts": 0,
+      "packagesManifested": 0,
+      "packagesOnTimeToCPT": 0,
+      "packagesLateToCPT": 0
     }
   ]
 }
@@ -92,10 +107,18 @@ Errors use RFC 7807 `application/problem+json`, consistent with the OLTP API
 
 ### MCP (curated, read-only)
 
-Tool **`get_fulfillment_throughput_report`** — same filters as the REST endpoint;
-it calls the reports REST rather than opening the analytical database. Exposed by
-the existing `cmd/mcp` server (Streamable HTTP), consistent with
-[ADR-0008](../adr/0008-mcp-inbound-adapter.md).
+Two read-only tools on the existing `cmd/mcp` server (Streamable HTTP),
+consistent with [ADR-0008](../adr/0008-mcp-inbound-adapter.md). Both call the
+reports REST rather than opening the analytical database, and both are
+registered only when the MCP server has a reports client configured.
+
+- **`get_fulfillment_throughput_report`** — same filters as the REST endpoint;
+  returns the rows.
+- **`get_on_time_to_cpt`** ([ADR-0026](../adr/0026-on-time-to-cpt-kpi.md)) — `from`/`to` (required),
+  optional `taskType`/`stationId`; sums the three on-time counts across the
+  window and returns `packagesManifested`, `packagesOnTimeToCPT`,
+  `packagesLateToCPT` and `onTimeRate` (`0` when nothing manifested). The
+  rate is computed at read time, never stored.
 
 ## Freshness SLA
 

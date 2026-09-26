@@ -108,6 +108,15 @@ Per ADR-0008, the current posture for these internal, non-user-facing servers:
    its own client for that hop and **MUST NOT** pass a client token through
    (confused-deputy prevention) — applies the day any upstream hop exists.
 
+:::warning This service does not currently conform to §7.1–§7.4
+[ADR-0022](../adr/0022-remove-rest-mcp-auth.md) removed the static-bearer
+auth layer from both this service's REST API and its MCP server (and
+supersedes ADR-0021). Today `cmd/mcp` accepts unauthenticated requests and
+has no read/read-write key classes. The rules above remain the estate
+standard; §7.5 (in-cluster only, never public) is what currently bounds the
+exposure here.
+:::
+
 ## 8. Guardrails (regardless of auth)
 
 1. Every tool handler **MUST** validate its inputs defensively — the caller is a

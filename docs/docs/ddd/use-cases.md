@@ -3,7 +3,7 @@ id: use-cases
 title: Use cases & ports
 sidebar_label: Use cases & ports
 sidebar_position: 4
-description: The nine application-layer use cases, the six outbound ports they depend on, and the adapters that satisfy them.
+description: The fifteen application-layer use cases, the outbound ports they depend on, and the adapters that satisfy them.
 ---
 
 # Use cases & ports
@@ -12,24 +12,43 @@ The application layer is one struct per use case, each holding its
 dependencies as plain fields. There is no DI container and no base class. Each
 use case depends only on the domain and on `ports` — never on an adapter.
 
-## The nine use cases
+## The fifteen use cases
+
+One file each in `internal/application/usecases/`.
 
 | # | Use case | Signature (abridged) | Raises | Endpoint |
 | --- | --- | --- | --- | --- |
-| 1 | `CreateTask` | `Execute(ctx, taskType, cpt, orderRef, required) (*Task, error)` | `TaskCreated` | `POST /tasks` |
+| 1 | `CreateTask` | `Execute(ctx, taskType, cpt, orderRef, required, fragile, giftWrap) (*Task, error)` | `TaskCreated` | `POST /tasks`; also the `WorkReleased` consumer |
 | 2 | `ClaimNext` | `Execute(ctx, stationId, taskType) (*Task, error)` | `TaskClaimed` | `POST /stations/{stationId}/claim-next` |
 | 3 | `RenewLease` | `Execute(ctx, taskId, stationId) error` | — | `POST /tasks/{id}/renew-lease` |
 | 4 | `CompleteTask` | `Execute(ctx, taskId, stationId) error` | `TaskCompleted` | `POST /tasks/{id}/complete` |
 | 5 | `SealPackage` | `Execute(ctx, taskId, stationId, contents) (*Package, error)` | `PackageSealed` | `POST /tasks/{id}/seal-package` |
-| 6 | `RunSlam` | `Execute(ctx, packageId, actualWeight, expectedWeight) error` | `LabelApplied` **or** `WeightDiscrepancyDetected` + `PackageDiverted` | `POST /packages/{id}/slam` |
+| 6 | `RunSlam` | `Execute(ctx, packageId, actualWeight, expectedWeight) error` | `LabelApplied` + `PackageManifested` **or** `WeightDiscrepancyDetected` + `PackageDiverted` | `POST /packages/{id}/slam` |
 | 7 | `GetQueueDepth` | `Execute(ctx, taskType) (int, error)` | — | `GET /queues/{taskType}/depth` |
 | 8 | `ExpireLeases` | `Execute(ctx) (int, error)` | `LeaseExpired` per task freed | `POST /tasks/expire-leases` |
-| 9 | `RegisterStation` | `Execute(ctx, stationId, capabilities) (*Station, error)` | — | `POST /stations` |
+| 9 | `RegisterStation` | `Execute(ctx, stationId, capabilities, locationCode) (*Station, error)` | — | `POST /stations` |
+| 10 | `CheckInStation` | `Execute(ctx, stationId, occupant) (*Station, error)` | — | `POST /stations/{stationId}/check-in` |
+| 11 | `CheckOutStation` | `Execute(ctx, stationId) (*Station, error)` | — | `POST /stations/{stationId}/check-out` |
+| 12 | `GetTasksByOrderRef` | `Execute(ctx, orderRef) ([]*Task, error)` | — | `GET /tasks?orderRef=` |
+| 13 | `GetInstalledCapacity` | `Execute(ctx, capability) (int, error)` | — | `GET /capacity/{capability}` |
+| 14 | `SweepCPTMisses` | `Execute(ctx) (int, error)` | `TaskCPTMissed` per overdue open task | `POST /tasks/sweep-cpt-misses` |
+| 15 | `ArriveAtRebin` | `Execute(ctx, orderRef, lineId, requiredLineIds, packCPT, packRequired, packFragile, packGiftWrap) error` | `ItemArrivedAtRebin`; on completion also `TaskCreated` (via `CreateTask`) + `OrderConsolidated` | `POST /rebin/arrivals` |
 
-The first eight are the set named in `CLAUDE.md`; `RegisterStation` was added
-later to close a real gap — without it, a freshly started server had no way to
-create a `Station` over HTTP, so every `claim-next` call returned "station not
-found" and the pull-dispatch flow could not be exercised end to end.
+`RegisterStation` exists to close a real gap — without it, a freshly started
+server had no way to create a `Station` over HTTP, so every `claim-next` call
+returned "station not found." Check-in/out record the station's occupant for
+labor attribution ([ADR-0014](../adr/0014-labor-performance-integration-hooks.md));
+`GetInstalledCapacity` backs Workforce Management's capacity read
+([ADR-0018](../adr/0018-installed-capacity-read-endpoint.md)); `SweepCPTMisses`
+is the promise-feedback sweep
+([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md));
+`ArriveAtRebin` is the Rebin fan-in
+([ADR-0016](../adr/0016-rebin-and-order-consolidation.md)).
+
+Every state-changing use case wraps its save + publish in
+`ports.UnitOfWork` when one is wired, so with Postgres the state change and
+the outbox row commit atomically
+([ADR-0020](../adr/0020-transactional-outbox.md)).
 
 ## Notes on the ones with subtleties
 
@@ -96,24 +115,44 @@ partial sweep is reported honestly.
 
 Re-registering an existing `stationId` **updates** its capability set rather
 than erroring. Recertifying a station is a legitimate operational action, not
-a conflict. It publishes nothing: none of the nine existing domain events fits
-"a station was registered," and inventing a tenth purely for symmetry was
-rejected.
+a conflict. It publishes nothing: no domain event fits "a station was
+registered," and inventing one purely for symmetry was rejected.
 
-## The six outbound ports
+An optional `locationCode` ties the station to a facility-layout location.
+When `ports.LocationRoleLookup` is wired (`LOCATION_ROLE_MODE=http`), a code
+whose known role is not `WorkCenter` is rejected with
+`ErrStationLocationNotWorkCenter` (`422`); an unknown code or an unwired
+lookup is accepted unchecked
+([ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md)).
 
-All in `internal/application/ports/ports.go`. The application layer depends on
-these interfaces; adapters implement them.
+### `SweepCPTMisses` — the other sweep
+
+Same shape as `ExpireLeases`: no `now` argument, time from `ports.Clock`.
+It asks `TaskRepo.FindOpenPastCPT(now)` for every Pending or Claimed task
+at or past its CPT and publishes one `TaskCPTMissed` per task. It changes no
+task state, so an overdue task re-fires on every pass until it completes —
+consumers deduplicate on `taskId`.
+
+## The outbound ports
+
+All in `internal/application/ports/ports.go` (plus the deliberately
+unimplemented `EquipmentCommandPort` in `equipment.go`, ADR-0015). The
+application layer depends on these interfaces; adapters implement them.
 
 | Port | Methods | Implemented by |
 | --- | --- | --- |
-| `TaskRepo` | `Save`, `FindById`, `FindClaimableByType`, `FindAllClaimed`, `CountByTypeAndStatus` | `memory`, `postgres` |
-| `StationRepo` | `Save`, `FindById` | `memory`, `postgres` |
+| `TaskRepo` | `Save`, `FindById`, `FindClaimableByType`, `FindAllClaimed`, `FindOpenPastCPT`, `CountByTypeAndStatus`, `FindByOrderRef` | `memory`, `postgres` |
+| `StationRepo` | `Save`, `FindById`, `CountByCapability` | `memory`, `postgres` |
+| `OrderConsolidationRepo` | `Save`, `FindByOrderRef` | `memory`, `postgres` |
 | `PackageRepo` | `Save`, `FindById` | `memory`, `postgres` |
 | `EventPublisher` | `Publish(ctx, events...)` | `events` (log/buffered), `kafka` |
 | `Clock` | `Now()` | `memory.SystemClock`, fixed clocks in tests |
 | `ProcessedEvents` | `MarkProcessed(ctx, eventId) (bool, error)` | `memory`, `postgres` |
 | `ProductClassificationLookup` | `GetClassification(ctx, sku) (ClassificationInfo, error)` | `productclassification` (http client, permissive no-op) |
+| `LocationRoleLookup` | `GetRole(ctx, locationCode) (LocationRoleInfo, error)` | `facilitylayout` (http client, permissive no-op) |
+| `PathCatalogue` | `Lookup(pathId)` | `pathcatalog.Catalogue`, loaded by `filecatalog` or `kafkacatalog` |
+| `UnitOfWork` | `Execute(ctx, fn)` | `postgres` (transaction + outbox); nil in memory mode |
+| `Metrics` | `TaskClaimed`, `TaskCompleted` | OpenTelemetry meter (`internal/observability`) |
 
 ### Two ports that carry design weight
 

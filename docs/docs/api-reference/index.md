@@ -4,7 +4,7 @@ title: API Reference
 sidebar_label: Overview
 sidebar_position: 1
 slug: /api-reference/
-description: All ten REST endpoints and the event contract — conventions, status-code mapping, and RFC 7807 error shapes.
+description: Every REST endpoint and the event contract — conventions, status-code mapping, and RFC 7807 error shapes.
 ---
 
 # API Reference
@@ -21,25 +21,43 @@ The REST pages under **REST API** are generated from the real spec file at
 build time by `docusaurus-plugin-openapi-docs`. They are not transcribed by
 hand, so they cannot drift from the contract that CI validates.
 
-## Endpoint coverage: 10 / 10
+## Endpoint coverage: 15 / 16
 
 Cross-checked against `internal/adapters/inbound/http/router.go`:
 
-| Method | Path | Use case | Tag |
+| Method | Path | Use case | In `openapi.yaml`? |
 | --- | --- | --- | --- |
-| `POST` | `/tasks` | `CreateTask` | Tasks |
-| `POST` | `/stations` | `RegisterStation` | Stations |
-| `POST` | `/stations/{stationId}/claim-next` | `ClaimNext` | Stations, Tasks |
-| `POST` | `/tasks/{id}/renew-lease` | `RenewLease` | Tasks |
-| `POST` | `/tasks/{id}/complete` | `CompleteTask` | Tasks |
-| `POST` | `/tasks/{id}/seal-package` | `SealPackage` | Tasks, Packages |
-| `POST` | `/packages/{id}/slam` | `RunSlam` | Packages |
-| `GET` | `/queues/{taskType}/depth` | `GetQueueDepth` | Tasks |
-| `POST` | `/tasks/expire-leases` | `ExpireLeases` | Tasks |
-| `GET` | `/healthz` | *(liveness)* | System |
+| `POST` | `/tasks` | `CreateTask` | Yes |
+| `GET` | `/tasks?orderRef=` | `GetTasksByOrderRef` ([ADR-0013](../adr/0013-fulfillment-mfe-console-adoption.md)) | Yes |
+| `POST` | `/stations` | `RegisterStation` (optional `locationCode`, [ADR-0024](../adr/0024-station-location-code-and-workcenter-role-check.md)) | Yes |
+| `POST` | `/stations/{stationId}/claim-next` | `ClaimNext` | Yes |
+| `POST` | `/stations/{stationId}/check-in` | `CheckInStation` | Yes |
+| `POST` | `/stations/{stationId}/check-out` | `CheckOutStation` | Yes |
+| `POST` | `/tasks/{id}/renew-lease` | `RenewLease` | Yes |
+| `POST` | `/tasks/{id}/complete` | `CompleteTask` | Yes |
+| `POST` | `/tasks/{id}/seal-package` | `SealPackage` | Yes |
+| `POST` | `/packages/{id}/slam` | `RunSlam` | Yes |
+| `GET` | `/queues/{taskType}/depth` | `GetQueueDepth` | Yes |
+| `GET` | `/capacity/{capability}` | `GetInstalledCapacity` ([ADR-0018](../adr/0018-installed-capacity-read-endpoint.md)) | Yes |
+| `POST` | `/tasks/expire-leases` | `ExpireLeases` | Yes |
+| `POST` | `/tasks/sweep-cpt-misses` | `SweepCPTMisses` ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) | Yes |
+| `GET` | `/healthz` | *(liveness)* | Yes |
+| `POST` | `/rebin/arrivals` | `ArriveAtRebin` ([ADR-0016](../adr/0016-rebin-and-order-consolidation.md)) | **No** |
 
-Every route registered on the chi router appears in `apis/openapi.yaml`, and
-every path in the spec is a real route. No orphans in either direction.
+`POST /rebin/arrivals` is registered on the chi router but not declared in
+`apis/openapi.yaml`, so it has no generated page under **REST API** and the
+PR-time `docs-api-drift` check cannot see it. That is a spec gap to close in
+the spec, not by hand-writing a page here. Every path the spec *does*
+declare is a real route.
+
+The read-only analytics endpoints (`GET /reports/throughput`,
+`GET /reports/throughput/freshness`) are served by the separate
+`cmd/fulfillment-reports` process — see
+[Throughput report](../analytics/throughput-report.md).
+
+No route or MCP tool is authenticated:
+[ADR-0022](../adr/0022-remove-rest-mcp-auth.md) removed the static-bearer
+layer and supersedes ADR-0021.
 
 ## Conventions
 
@@ -100,8 +118,8 @@ exhaustive over the typed error set.
 | --- | --- | --- |
 | `400` | Malformed or incomplete request body | invalid JSON, missing required DTO field (`invalid-request`) |
 | `404` | Referenced aggregate does not exist | `ErrTaskNotFound`, `ErrStationNotFound`, `ErrPackageNotFound` |
-| `409` | Well-formed request, but the aggregate's **state** forbids it | `ErrAlreadyClaimed`, `ErrAlreadyCompleted`, `ErrNotClaimed`, `ErrNotOwner`, `ErrOccupied`, `ErrNotOccupied`, `ErrAlreadySealed`, `ErrAlreadyProcessed`, `ErrNotSealed`, `ErrNoClaimableTask` |
-| `422` | Well-formed request, but the **content** violates a domain rule | `ErrCapabilityMismatch` (task and station), `ErrNoScannedContents`, `ErrWrongTaskType` |
+| `409` | Well-formed request, but the aggregate's **state** forbids it | `ErrAlreadyClaimed`, `ErrAlreadyCompleted`, `ErrNotClaimed`, `ErrNotOwner`, `ErrOccupied`, `ErrNotOccupied`, `ErrAlreadySealed`, `ErrAlreadyProcessed`, `ErrNotSealed`, `ErrPackageSegregationViolation`, `ErrNoClaimableTask` |
+| `422` | Well-formed request, but the **content** violates a domain rule | `ErrCapabilityMismatch` (task and station), `ErrNoScannedContents`, `consolidation.ErrUnknownLine`, `ErrWrongTaskType`, `ErrStationLocationNotWorkCenter` |
 | `500` | Anything unmapped | fallback (`internal-error`) |
 
 The `409` versus `422` split is the one worth internalising: `409` means *"try
@@ -131,11 +149,14 @@ as a permanent failure.
 | `package-already-sealed` | 409 | Package already sealed |
 | `package-already-processed` | 409 | Package SLAM already processed |
 | `package-not-sealed` | 409 | Package must be sealed before SLAM |
+| `package-segregation-violation` | 409 | Scanned item's DOT hazard class is incompatible with an already-scanned item |
 | `no-claimable-task` | 409 | No claimable task for station capabilities |
 | `task-capability-mismatch` | 422 | Station capabilities do not match task requirements |
 | `station-capability-mismatch` | 422 | Capabilities do not match |
 | `package-no-scanned-contents` | 422 | Cannot seal a package without scanned contents |
+| `rebin-unknown-line` | 422 | Line is not part of this order's required consolidation set |
 | `wrong-task-type` | 422 | Wrong task type for this operation |
+| `station-location-not-workcenter` | 422 | Station's locationCode does not resolve to a facility-layout WorkCenter |
 | `internal-error` | 500 | Internal server error |
 
 All types share the base URI
@@ -145,5 +166,6 @@ All types share the base URI
 
 - **Work release.** `wes-work-planning` decides what to release; it arrives
   over Kafka, not HTTP.
-- **Inventory reservations.** `inventory-storage` owns stock truth.
+- **Inventory reservations.** `inventory-storage` owns stock truth; this
+  service only reads per-SKU hazard classification from it (opt-in).
 - **WCS / equipment commands.** A separate command channel, not built.

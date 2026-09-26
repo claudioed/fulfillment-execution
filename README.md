@@ -70,7 +70,13 @@ is a reserved keyword) — imported as `pack "github.com/claudioed/fulfillment-e
 
 ### In-memory (no database required)
 
+Every mode needs a process-path catalogue first: `cmd/execution` loads
+`PATH_CATALOGUE_FILE` (default `/etc/fulfillment-execution/process-paths.yaml`)
+at boot and exits if it is missing or invalid
+([ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md)). Point it at the fleet catalogue in `warehouse-infra`:
+
 ```sh
+export PATH_CATALOGUE_FILE=~/warehouse-systems/warehouse-infra/config/process-paths/sortable-fc.yaml
 go run ./cmd/execution
 ```
 
@@ -423,7 +429,8 @@ Execution -> Orchestration).
 - **Consumed topic**: `warehouse.work-planning.events` (consumer group `fulfillment-execution`)
 - **Published topic**: `warehouse.fulfillment.events`
 - **Broker**: `KAFKA_BROKERS` env var, default `localhost:9092`. This connects
-  to the shared broker started via `~/warehouse-systems/docker-compose.kafka.yml`;
+  to the fleet's shared broker in the `warehouse-infra` kind cluster (host
+  listener `localhost:9092`);
   this repo's own `docker-compose.yml` does not run Kafka.
 - **Client library**: `github.com/segmentio/kafka-go`.
 
@@ -444,23 +451,24 @@ Identical across all four warehouse-systems services:
 Messages whose `event_type` isn't `"WorkReleased"` are ignored. `data.fragile`
 is optional — see the Mapping section below.
 
-### Mapping (known simplification)
+### Mapping
 
-`path_id` does not carry the task type in general. This integration assumes,
-as a simplification for this round, that `path_id` carries the task type as a
-string prefix: `"pick-*"` → Pick, `"pack-*"` → Pack, `"slam-*"` → SLAM;
-anything else defaults to **Pick**. The rest of the mapping:
+`path_id` is resolved through the process-path catalogue
+([ADR-0017](docs/docs/adr/0017-process-path-catalogue-as-configuration.md)):
+the longest declared `matchPrefix` that prefixes the id wins (so
+`pick-zone-a` → `PICK`), and the matched path supplies both the task type and
+its required capabilities. A `path_id` that matches no declared path is a
+hard handling error — there is no default-to-Pick. The rest of the mapping:
 
 | WorkReleased field     | Task field                                          |
 |-------------------------|------------------------------------------------------|
-| `data.path_id` (prefix) | task type (Pick/Pack/SLAM, default Pick)              |
+| `data.path_id`          | task type (catalogue lookup; unknown = error)          |
 | `data.work_unit_id`     | `ref`                                                 |
 | `data.cpt`               | `cpt`                                                 |
 | `data.fragile` (optional, default `false`) | `fragile` — a packing hint, see below |
-| task type                | required capabilities (`pick`, `pack`, or `slam`)     |
+| matched path             | required capabilities (from the catalogue)             |
 
-**`data.fragile` is optional** (another known simplification, same shape as
-the `path_id`-prefix rule above): it is sourced from
+**`data.fragile` is optional**: it is sourced from
 `inventory-storage`'s `ProductClassification` concept and stamped by
 `wes-work-planning` at release time, but any already-documented producer that
 predates this field simply omits it, and the consumer defaults to `false`
@@ -487,11 +495,12 @@ creating a duplicate Task. See
 
 ### Smoke test
 
-With the shared broker running (`docker compose -f ~/warehouse-systems/docker-compose.kafka.yml up -d`)
-and this service running (`go run ./cmd/execution`):
+With the shared broker reachable at `localhost:9092` (the `warehouse-infra`
+kind cluster) and this service running (`go run ./cmd/execution`, with
+`PATH_CATALOGUE_FILE` set — see Configuration):
 
 ```sh
-docker exec -i warehouse-kafka kafka-console-producer.sh \
+kafka-console-producer.sh \
   --broker-list localhost:9092 --topic warehouse.work-planning.events <<'EOF'
 {"event_id":"smoke-1","event_type":"WorkReleased","occurred_at":"2026-08-21T22:00:00Z","source":"wes-work-planning","data":{"path_id":"pick-smoke","work_unit_id":"wu-smoke-1","cpt":"2026-08-21T23:00:00Z","ref":"release-smoke"}}
 EOF
@@ -535,8 +544,8 @@ Downstream: `wes-work-planning` calls its `RecordCompletion` use case with
 
 #### Smoke test
 
-With the shared broker running (`docker compose -f ~/warehouse-systems/docker-compose.kafka.yml up -d`)
-and this service running with Kafka publishing enabled:
+With the shared broker reachable at `localhost:9092` (the `warehouse-infra`
+kind cluster) and this service running with Kafka publishing enabled:
 
 ```sh
 EVENT_PUBLISHER=kafka go run ./cmd/execution
@@ -546,7 +555,7 @@ In another terminal, start a consumer on the published topic, then drive a
 task through the full lifecycle over HTTP:
 
 ```sh
-docker exec -i warehouse-kafka kafka-console-consumer.sh \
+kafka-console-consumer.sh \
   --bootstrap-server localhost:9092 --topic warehouse.fulfillment.events --from-beginning &
 
 curl -sX POST localhost:8080/tasks -H 'Content-Type: application/json' \

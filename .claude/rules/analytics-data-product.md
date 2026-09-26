@@ -22,6 +22,10 @@ store (arch-test enforces this).
   - `GET /reports/throughput/freshness` (lag vs real time)
   - MCP tool `get_fulfillment_throughput_report` (calls the reports REST;
     never opens the analytical DB directly)
+  - Inputs actually projected: `TaskClaimed`, `TaskCompleted`,
+    `LeaseExpired`, `WeightDiscrepancyDetected`, `PackageManifested`
+    (`inbound/kafka/analytics_consumer.go`); every other analytics-topic
+    event is acknowledged without projecting.
   - On-time-to-CPT KPI (ADR-0026, companion to order-management ADR 0014
     §6): `PackagesManifested`/`PackagesOnTimeToCPT`/`PackagesLateToCPT`
     raw counts on each row (SLAM rows only in practice), attributed to
