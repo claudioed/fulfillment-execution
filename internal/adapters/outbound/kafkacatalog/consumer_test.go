@@ -172,6 +172,64 @@ func TestConsumer_Revised_UpdatesMatchPrefix(t *testing.T) {
 	}
 }
 
+// destination_location_role is process-path-management's optional field
+// (that service's ADR 0006/0009); this consumer must decode it into
+// PathDefinition.DestinationLocationRole so a future caller of Lookup
+// can act on it — see the PathDefinition doc comment for why this is
+// wiring only.
+func TestConsumer_DecodesDestinationLocationRole(t *testing.T) {
+	reader := &fakeReader{
+		messages: []kafkago.Message{
+			envelopeMsg(t, 0, 0, eventTypeCreated, pathData{PathId: "PACK", MatchPrefix: "pack", Direct: true, RequiredCapabilities: []string{"pack"}, DestinationLocationRole: "Drop"}),
+		},
+	}
+	c := newTestConsumer(reader, targetOffsets{0: 1})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = c.Run(ctx) }()
+
+	if err := c.WaitReady(ctx); err != nil {
+		t.Fatalf("expected Ready before timeout, got: %v", err)
+	}
+
+	def, err := c.Lookup("pack")
+	if err != nil {
+		t.Fatalf("expected PACK to resolve, got: %v", err)
+	}
+	if def.DestinationLocationRole != "Drop" {
+		t.Fatalf("expected DestinationLocationRole %q, got %q", "Drop", def.DestinationLocationRole)
+	}
+}
+
+// A path with no declared destination role (the default, most common
+// case — see process-path-management's own ProcessPathData doc comment)
+// must decode to the empty string, not fail or panic.
+func TestConsumer_NoDestinationLocationRole_DecodesToEmptyString(t *testing.T) {
+	reader := &fakeReader{
+		messages: []kafkago.Message{
+			envelopeMsg(t, 0, 0, eventTypeCreated, pathData{PathId: "PICK", MatchPrefix: "pick", Direct: true, RequiredCapabilities: []string{"pick"}}),
+		},
+	}
+	c := newTestConsumer(reader, targetOffsets{0: 1})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go func() { _ = c.Run(ctx) }()
+
+	if err := c.WaitReady(ctx); err != nil {
+		t.Fatalf("expected Ready before timeout, got: %v", err)
+	}
+
+	def, err := c.Lookup("pick")
+	if err != nil {
+		t.Fatalf("expected PICK to resolve, got: %v", err)
+	}
+	if def.DestinationLocationRole != "" {
+		t.Fatalf("expected empty DestinationLocationRole when undeclared, got %q", def.DestinationLocationRole)
+	}
+}
+
 func TestConsumer_UnknownEventType_IsIgnored(t *testing.T) {
 	reader := &fakeReader{
 		messages: []kafkago.Message{

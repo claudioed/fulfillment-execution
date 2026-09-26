@@ -59,6 +59,12 @@ type StationRepo interface {
 type PackageRepo interface {
 	Save(ctx context.Context, p *pack.Package) error
 	FindById(ctx context.Context, id shared.PackageId) (*pack.Package, error)
+	// FindByTaskId returns the Package already sealed for taskId, or nil
+	// (not an error) if no Package has been sealed for that task yet.
+	// SealPackage uses this to make POST /tasks/{id}/seal-package
+	// idempotent: a retried call returns the already-sealed Package
+	// instead of creating a duplicate (see SealPackage.Execute).
+	FindByTaskId(ctx context.Context, taskId shared.TaskId) (*pack.Package, error)
 }
 
 // OrderConsolidationRepo persists and retrieves OrderConsolidation

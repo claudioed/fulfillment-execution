@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -62,12 +63,37 @@ type WorkReleasedData struct {
 // Consumer reads WorkReleased events off warehouse.work-planning.events and
 // creates a Task for each one, exactly once per event_id despite Kafka's
 // at-least-once delivery.
+//
+// DeadLetter, when non-nil, is where a message that fails HandleMessage is
+// published instead of being silently dropped after logging (see Run and
+// sendToDeadLetter). It is nil-safe: a Consumer built without one (every
+// pre-existing test in this package, and any deployment that predates this
+// feature) behaves exactly as before — log and continue, same as ADR-0004
+// originally documented. No dead-letter naming convention already existed
+// anywhere in this fleet (checked every repo's Go source for
+// "dead letter"/"DLQ" before choosing one), so DeadLetterTopic's
+// "<topic>.dlq" suffix is this consumer's own convention, not an existing
+// fleet standard being followed.
 type Consumer struct {
 	Reader     *kafkago.Reader
 	CreateTask *usecases.CreateTask
 	Processed  ports.ProcessedEvents
 	Catalogue  ports.PathCatalogue
 	Logger     *slog.Logger
+	DeadLetter DeadLetterSink
+}
+
+// DeadLetterSink publishes one or more messages, matching the subset of
+// *kafkago.Writer this consumer needs so tests can substitute a fake
+// without a live broker.
+type DeadLetterSink interface {
+	WriteMessages(ctx context.Context, msgs ...kafkago.Message) error
+}
+
+// DeadLetterTopic derives the dead-letter topic name for topic: this
+// consumer's own "<topic>.dlq" convention.
+func DeadLetterTopic(topic string) string {
+	return topic + ".dlq"
 }
 
 // NewConsumer constructs a Consumer reading topic from brokers as part of
@@ -97,8 +123,18 @@ func newConsumer(brokers []string, topic, groupID string, startOffset int64, cre
 }
 
 // Run reads and handles messages until ctx is cancelled or the reader
-// returns a fatal error. A handling error is logged and the loop continues
-// so one bad message cannot wedge the consumer.
+// returns a fatal error. A message that fails Handle is published to
+// DeadLetter (when configured — see the Consumer type doc comment) with
+// the failure's error message attached, then the loop continues; this
+// consumer makes exactly one processing attempt per message (Kafka's
+// consumer-group offset is already advanced by the time Handle returns,
+// so there is no in-process retry to exhaust — every handling failure is
+// treated as non-retryable here, the same "log and move on" decision
+// ADR-0004 already made, now with the message preserved instead of
+// dropped). A failure to publish to DeadLetter itself is logged
+// separately and does NOT stop the loop — a broker blip on the DLQ
+// publish must not wedge the main consumer, which is the whole point of
+// this feature.
 func (c *Consumer) Run(ctx context.Context) error {
 	for {
 		msg, err := c.Reader.ReadMessage(ctx)
@@ -110,7 +146,39 @@ func (c *Consumer) Run(ctx context.Context) error {
 		}
 		if err := c.Handle(ctx, msg); err != nil {
 			c.Logger.ErrorContext(ctx, "kafka message handling failed", "error", err)
+			c.SendToDeadLetter(ctx, msg, err)
 		}
+	}
+}
+
+// sendToDeadLetter publishes msg to DeadLetterTopic(msg.Topic), preserving
+// the original key/value/headers and adding failure context as extra
+// headers, so a message that fails processing is preserved for later
+// inspection/replay instead of being lost after only a log line. A no-op
+// when c.DeadLetter is nil (see the Consumer type doc comment). A
+// publish failure here is logged and swallowed — it must never propagate
+// back into Run's loop.
+func (c *Consumer) SendToDeadLetter(ctx context.Context, msg kafkago.Message, cause error) {
+	if c.DeadLetter == nil {
+		return
+	}
+	headers := append([]kafkago.Header{}, msg.Headers...)
+	headers = append(headers,
+		kafkago.Header{Key: "x-dlq-error", Value: []byte(cause.Error())},
+		kafkago.Header{Key: "x-dlq-original-topic", Value: []byte(msg.Topic)},
+		kafkago.Header{Key: "x-dlq-original-partition", Value: []byte(strconv.Itoa(msg.Partition))},
+		kafkago.Header{Key: "x-dlq-original-offset", Value: []byte(strconv.FormatInt(msg.Offset, 10))},
+		kafkago.Header{Key: "x-dlq-failed-at", Value: []byte(time.Now().UTC().Format(time.RFC3339Nano))},
+	)
+	dlqMsg := kafkago.Message{
+		Topic:   DeadLetterTopic(msg.Topic),
+		Key:     msg.Key,
+		Value:   msg.Value,
+		Headers: headers,
+	}
+	if err := c.DeadLetter.WriteMessages(ctx, dlqMsg); err != nil {
+		c.Logger.ErrorContext(ctx, "failed to publish message to dead-letter topic",
+			"dlq_topic", dlqMsg.Topic, "original_error", cause, "dlq_error", err)
 	}
 }
 

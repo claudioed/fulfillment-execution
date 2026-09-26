@@ -463,7 +463,7 @@ func TestSealPackage_PublishFailure_RollsBack(t *testing.T) {
 func slamHarness(t *testing.T) (*scopedPackageRepo, shared.PackageId) {
 	t.Helper()
 	packages := &scopedPackageRepo{PackageRepo: memory.NewPackageRepo()}
-	p := pack.New("p1", "order-1", false, false)
+	p := pack.New("p1", "order-1", "task-1", false, false)
 	if err := p.ScanItem("sku-1"); err != nil {
 		t.Fatalf("scan: %v", err)
 	}

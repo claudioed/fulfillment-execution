@@ -58,6 +58,7 @@ const WeightTolerance = 0.05
 type Package struct {
 	id                   shared.PackageId
 	orderRef             shared.OrderRef
+	taskId               shared.TaskId
 	status               Status
 	scannedContents      []string
 	fragileHandling      bool
@@ -65,7 +66,9 @@ type Package struct {
 	scannedHazardClasses []int
 }
 
-// New creates an empty, open package for the given order. fragileHandling is
+// New creates an empty, open package for the given order. taskId is the
+// owning Pack task's id (see SealPackage), used only as SealPackage's
+// dedupe key — it carries no other domain meaning. fragileHandling is
 // derived from the owning Pack task's Fragile flag (itself stamped by
 // wes-work-planning from inventory-storage's ProductClassification) — true
 // if any of the package's scanned/sealed contents came from an order line
@@ -75,8 +78,8 @@ type Package struct {
 // explicit gift-wrap request made at work-enqueue time, not a product
 // classification) — see ADR-0011. Both flags are independently derived and
 // kept separate; neither is merged into the other.
-func New(id shared.PackageId, orderRef shared.OrderRef, fragileHandling bool, giftWrapRequested bool) *Package {
-	return &Package{id: id, orderRef: orderRef, status: Open, fragileHandling: fragileHandling, giftWrapRequested: giftWrapRequested}
+func New(id shared.PackageId, orderRef shared.OrderRef, taskId shared.TaskId, fragileHandling bool, giftWrapRequested bool) *Package {
+	return &Package{id: id, orderRef: orderRef, taskId: taskId, status: Open, fragileHandling: fragileHandling, giftWrapRequested: giftWrapRequested}
 }
 
 // Rehydrate reconstructs a Package from persisted state. scannedHazardClasses
@@ -85,10 +88,15 @@ func New(id shared.PackageId, orderRef shared.OrderRef, fragileHandling bool, gi
 // at scan time — see ScanItemWithClass. A nil/empty slice is valid: it means
 // no scanned item in this package ever carried a hazard class (the common
 // case, and the only case for every package sealed before this feature).
-func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, status Status, scannedContents []string, fragileHandling bool, scannedHazardClasses []int, giftWrapRequested bool) *Package {
+// taskId is empty ("") for any package sealed before this field was added
+// (migration backfills nothing — see the postgres adapter's Save comment);
+// SealPackage's idempotency guard treats an empty taskId as "not
+// dedupe-able", never as a false match against a later call's real taskId.
+func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, taskId shared.TaskId, status Status, scannedContents []string, fragileHandling bool, scannedHazardClasses []int, giftWrapRequested bool) *Package {
 	return &Package{
 		id:                   id,
 		orderRef:             orderRef,
+		taskId:               taskId,
 		status:               status,
 		scannedContents:      scannedContents,
 		fragileHandling:      fragileHandling,
@@ -99,6 +107,11 @@ func Rehydrate(id shared.PackageId, orderRef shared.OrderRef, status Status, sca
 
 func (p *Package) Id() shared.PackageId      { return p.id }
 func (p *Package) OrderRef() shared.OrderRef { return p.orderRef }
+
+// TaskId is the id of the Pack task this package was sealed for, or "" for
+// a package sealed before this field was added. See SealPackage's doc
+// comment for why this is the dedupe key for POST /tasks/{id}/seal-package.
+func (p *Package) TaskId() shared.TaskId     { return p.taskId }
 func (p *Package) Status() Status            { return p.status }
 func (p *Package) ScannedContents() []string { return p.scannedContents }
 

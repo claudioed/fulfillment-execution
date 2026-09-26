@@ -2,6 +2,9 @@ package kafka_test
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"log/slog"
 	"strconv"
 	"testing"
 	"time"
@@ -51,8 +54,97 @@ func newConsumer(t *testing.T) (*kafka.Consumer, *memory.TaskRepo) {
 		CreateTask: createTask,
 		Processed:  memory.NewProcessedEventsRepo(),
 		Catalogue:  testCatalogue(),
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	return c, tasks
+}
+
+// fakeDeadLetterSink records every message written to it, so a dead-letter
+// test can assert on topic/key/value/headers without a live broker.
+type fakeDeadLetterSink struct {
+	sent []kafkago.Message
+	err  error
+}
+
+func (f *fakeDeadLetterSink) WriteMessages(_ context.Context, msgs ...kafkago.Message) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.sent = append(f.sent, msgs...)
+	return nil
+}
+
+func headerValue(headers []kafkago.Header, key string) (string, bool) {
+	for _, h := range headers {
+		if h.Key == key {
+			return string(h.Value), true
+		}
+	}
+	return "", false
+}
+
+// sendToDeadLetter (invoked by Run on a Handle failure) publishes the
+// original message to <topic>.dlq, preserving its key/value and adding
+// failure-context headers.
+func TestSendToDeadLetter_PublishesOriginalMessageWithFailureContext(t *testing.T) {
+	c, _ := newConsumer(t)
+	sink := &fakeDeadLetterSink{}
+	c.DeadLetter = sink
+
+	orig := kafkago.Message{
+		Topic:     "warehouse.work-planning.events",
+		Partition: 2,
+		Offset:    42,
+		Key:       []byte("poison-key"),
+		Value:     []byte(`{"event_type":"WorkReleased","data":{"path_id":"NOT-A-REAL-PATH"}}`),
+		Headers:   []kafkago.Header{{Key: "existing", Value: []byte("keep-me")}},
+	}
+	c.SendToDeadLetter(context.Background(), orig, fmt.Errorf("path_id not found in catalogue"))
+
+	if len(sink.sent) != 1 {
+		t.Fatalf("expected exactly 1 message sent to the dead-letter sink, got %d", len(sink.sent))
+	}
+	got := sink.sent[0]
+	if got.Topic != "warehouse.work-planning.events.dlq" {
+		t.Fatalf("expected dlq topic %q, got %q", "warehouse.work-planning.events.dlq", got.Topic)
+	}
+	if string(got.Key) != "poison-key" {
+		t.Fatalf("expected original key preserved, got %q", got.Key)
+	}
+	if string(got.Value) != string(orig.Value) {
+		t.Fatalf("expected original value preserved verbatim, got %q", got.Value)
+	}
+	if v, ok := headerValue(got.Headers, "existing"); !ok || v != "keep-me" {
+		t.Fatalf("expected original header preserved, got headers %+v", got.Headers)
+	}
+	if v, ok := headerValue(got.Headers, "x-dlq-error"); !ok || v != "path_id not found in catalogue" {
+		t.Fatalf("expected x-dlq-error header with the failure cause, got %+v", got.Headers)
+	}
+	if v, ok := headerValue(got.Headers, "x-dlq-original-offset"); !ok || v != "42" {
+		t.Fatalf("expected x-dlq-original-offset=42, got %+v", got.Headers)
+	}
+}
+
+// A nil DeadLetter (the default — every pre-existing deployment, and every
+// other test in this file) must be a safe no-op, not a panic.
+func TestSendToDeadLetter_NilSink_IsNoOp(t *testing.T) {
+	c, _ := newConsumer(t)
+	c.DeadLetter = nil
+
+	c.SendToDeadLetter(context.Background(), kafkago.Message{Topic: "t"}, fmt.Errorf("boom"))
+}
+
+// A DeadLetter publish failure must be swallowed (logged, not propagated)
+// so a broker blip on the DLQ write itself cannot wedge the main consumer
+// loop — the entire point of routing failures to a DLQ instead of just
+// logging is that the main loop keeps moving.
+func TestSendToDeadLetter_SinkFailure_DoesNotPanicOrPropagate(t *testing.T) {
+	c, _ := newConsumer(t)
+	c.DeadLetter = &fakeDeadLetterSink{err: fmt.Errorf("dlq broker unreachable")}
+
+	// No panic and no return value to check — sendToDeadLetter is void;
+	// simply completing without panicking is the assertion.
+	c.SendToDeadLetter(context.Background(), kafkago.Message{Topic: "t", Value: []byte("x")}, fmt.Errorf("original failure"))
 }
 
 func totalPending(t *testing.T, tasks *memory.TaskRepo) int {
