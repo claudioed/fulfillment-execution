@@ -157,11 +157,17 @@ convention rather than a local improvisation.
   Pick task. Documented as a known simplification in `INTEGRATION.md`, the
   README, and the [Integration contracts](../ecosystem/integration-contracts.md)
   page.
-- **No dead-letter queue.** A message that fails to process is logged and the
-  loop continues. Because `MarkProcessed` runs *before* `CreateTask`, an event
-  whose task creation fails is treated as already-processed on redelivery. A
-  production deployment would want a DLQ, or mark-after-success with a
-  compensating uniqueness check.
+- **Dead-letter queue.** A message that fails to process is now published to
+  `<topic>.dlq` (original key/value preserved, plus `x-dlq-error` and other
+  failure-context headers) instead of only being logged — see
+  `internal/adapters/inbound/kafka/consumer.go`'s `SendToDeadLetter`. This
+  makes messages inspectable/replayable instead of silently lost, but does
+  not change the ordering caveat below: because `MarkProcessed` runs
+  *before* `CreateTask`, an event whose task creation fails and is
+  dead-lettered is still recorded as already-processed, so replaying it off
+  the DLQ requires clearing its `MarkProcessed` record first (or a
+  compensating uniqueness check) — DLQ delivery is not itself automatic
+  retry.
 - **In-memory idempotency does not survive restart.** Running with
   `EVENT_PUBLISHER=kafka` but no `DATABASE_URL` gives process-lifetime
   deduplication only.
