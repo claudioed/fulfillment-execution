@@ -70,8 +70,11 @@ rather than in the domain.**
 
 ### The catalogue and the `type` convention
 
-`apis/asyncapi.yaml` (AsyncAPI 2.6.0) documents **all nine** domain events as
-the published catalogue, with each message stating its current publication
+`apis/asyncapi.yaml` (AsyncAPI 2.6.0) documents **eleven of the thirteen**
+domain events as the published catalogue (the two Rebin events,
+`ItemArrivedAtRebin` and `OrderConsolidated`, are in-process only and not in
+the spec — see the [Events page](../api-reference/events.md)), with each
+message stating its current publication
 status. Event types follow the platform-wide convention:
 
 ```
@@ -142,10 +145,13 @@ convention rather than a local improvisation.
   the topic name changes too. Spectral validates the spec's internal
   consistency, not the code's conformance to it, so nothing catches this
   automatically.
-- **Only one of nine events is actually published.** The catalogue documents
-  the full domain-event set; eight are in-process only. That is honest in the
-  spec and on the [Events page](../api-reference/events.md), but a consumer
-  reading the catalogue alone could over-estimate what is available.
+- **Three of thirteen domain events are actually published.** The catalogue
+  documents eleven of the thirteen (two Rebin events are in-process only and
+  not in `asyncapi.yaml` at all); of those eleven, `TaskCompleted`,
+  `TaskCPTMissed`, and `PackageManifested` are actually on the wire — the
+  other eight are in-process only. That is honest in the spec and on the
+  [Events page](../api-reference/events.md), but a consumer reading the
+  catalogue alone could over-estimate what is available.
 - **Eventual consistency between contexts.** Work Planning's view of
   completion lags reality by the publish-plus-consume latency. Acceptable
   here, but it is a real property of the design.
@@ -157,11 +163,17 @@ convention rather than a local improvisation.
   Pick task. Documented as a known simplification in `INTEGRATION.md`, the
   README, and the [Integration contracts](../ecosystem/integration-contracts.md)
   page.
-- **No dead-letter queue.** A message that fails to process is logged and the
-  loop continues. Because `MarkProcessed` runs *before* `CreateTask`, an event
-  whose task creation fails is treated as already-processed on redelivery. A
-  production deployment would want a DLQ, or mark-after-success with a
-  compensating uniqueness check.
+- **Dead-letter queue.** A message that fails to process is now published to
+  `<topic>.dlq` (original key/value preserved, plus `x-dlq-error` and other
+  failure-context headers) instead of only being logged — see
+  `internal/adapters/inbound/kafka/consumer.go`'s `SendToDeadLetter`. This
+  makes messages inspectable/replayable instead of silently lost, but does
+  not change the ordering caveat below: because `MarkProcessed` runs
+  *before* `CreateTask`, an event whose task creation fails and is
+  dead-lettered is still recorded as already-processed, so replaying it off
+  the DLQ requires clearing its `MarkProcessed` record first (or a
+  compensating uniqueness check) — DLQ delivery is not itself automatic
+  retry.
 - **In-memory idempotency does not survive restart.** Running with
   `EVENT_PUBLISHER=kafka` but no `DATABASE_URL` gives process-lifetime
   deduplication only.

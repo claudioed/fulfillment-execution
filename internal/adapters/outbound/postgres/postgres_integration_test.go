@@ -281,7 +281,7 @@ func TestPackageRepo_SaveAndFindById(t *testing.T) {
 	ctx := context.Background()
 
 	id := shared.PackageId("integration-package-1")
-	p := pack.New(id, "order-1", true, true)
+	p := pack.New(id, "order-1", "task-1", true, true)
 	if err := p.ScanItemWithClass("sku-1", 3); err != nil {
 		t.Fatalf("ScanItemWithClass: %v", err)
 	}

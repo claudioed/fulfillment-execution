@@ -462,7 +462,7 @@ func TestOutbox_SweepCPTMisses_RoundTripsThroughRelay(t *testing.T) {
 func TestOutbox_RunSlam_LabelAppliedAndPackageManifestedRoundTripTogether(t *testing.T) {
 	s := newOutboxStack(t)
 	ctx := context.Background()
-	p := pack.New("pkg-manifest-1", "order-manifest", false, false)
+	p := pack.New("pkg-manifest-1", "order-manifest", "task-1", false, false)
 	// A non-zero hazard class is used solely so ScannedHazardClasses is a
 	// non-nil slice — packages.scanned_hazard_classes is NOT NULL and
 	// Package.ScanItem's hazardClass=0 shortcut never appends to it (see
@@ -522,5 +522,66 @@ func TestOutbox_RunSlam_LabelAppliedAndPackageManifestedRoundTripTogether(t *tes
 	}
 	if got := countOutbox(t, s.pool, "topic = '"+outboundkafka.AnalyticsTopic+"' AND event_type = 'LabelApplied'"); got != 1 {
 		t.Fatalf("expected LabelApplied on the analytics topic, got %d", got)
+	}
+}
+
+// 7. SealPackage retry-safety against a REAL Postgres round-trip: a
+// retried POST /tasks/{id}/seal-package for the same task must return the
+// original Package and must NOT insert a second row — proving migration
+// 0011's task_id column, its partial unique index, and package_repo.go's
+// ON CONFLICT / FindByTaskId actually work against a real database, not
+// just the in-memory adapter used by the unit tests in usecases_test.go.
+func TestOutbox_SealPackage_RetrySameTaskId_IsIdempotentAgainstRealPostgres(t *testing.T) {
+	s := newOutboxStack(t)
+	ctx := context.Background()
+
+	if err := s.stations.Save(ctx, station.New("s1", shared.NewCapabilitySet("pack"))); err != nil {
+		t.Fatalf("save station: %v", err)
+	}
+	create := &usecases.CreateTask{Tasks: s.tasks, Publisher: s.pub, Clock: s.clock, NewId: taskIds("seal"), UnitOfWork: s.uow}
+	if _, err := create.Execute(ctx, task.Pack, shared.NewCPT(s.clock.Now().Add(time.Hour)), "order-seal-retry", shared.NewCapabilitySet("pack"), false, false); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	claim := &usecases.ClaimNext{Tasks: s.tasks, Stations: s.stations, Publisher: s.pub, Clock: s.clock, UnitOfWork: s.uow}
+	claimed, err := claim.Execute(ctx, "s1", task.Pack)
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	pkgIds := func() func() shared.PackageId {
+		n := 0
+		return func() shared.PackageId { n++; return shared.PackageId("seal-pkg-" + string(rune('0'+n))) }
+	}()
+	seal := &usecases.SealPackage{Tasks: s.tasks, Packages: s.packages, Publisher: s.pub, Clock: s.clock, NewId: pkgIds, UnitOfWork: s.uow}
+
+	first, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-retry-1"})
+	if err != nil {
+		t.Fatalf("first seal: %v", err)
+	}
+
+	// Simulate a client retry (e.g. after a dropped response) with the
+	// exact same taskId/stationId/contents.
+	second, err := seal.Execute(ctx, claimed.Id(), "s1", []string{"sku-retry-1"})
+	if err != nil {
+		t.Fatalf("retried seal: %v", err)
+	}
+	if second.Id() != first.Id() {
+		t.Fatalf("expected the retry to return the SAME package id %q, got %q", first.Id(), second.Id())
+	}
+
+	var count int
+	if err := s.pool.QueryRow(ctx, "SELECT count(*) FROM packages WHERE task_id = $1", string(claimed.Id())).Scan(&count); err != nil {
+		t.Fatalf("count packages: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly 1 package row for task %s after a retried seal, got %d", claimed.Id(), count)
+	}
+
+	stored, err := s.packages.FindByTaskId(ctx, claimed.Id())
+	if err != nil {
+		t.Fatalf("FindByTaskId: %v", err)
+	}
+	if stored == nil || stored.Id() != first.Id() {
+		t.Fatalf("expected FindByTaskId to resolve to the original package, got %+v", stored)
 	}
 }

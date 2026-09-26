@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	kafkago "github.com/segmentio/kafka-go"
 
 	inboundhttp "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/http"
 	inboundkafka "github.com/claudioed/fulfillment-execution/internal/adapters/inbound/kafka"
@@ -230,6 +231,24 @@ func run() error {
 	defer func() { _ = consumer.Close() }()
 	if kafkaCatalogue != nil {
 		defer func() { _ = kafkaCatalogue.Close() }()
+	}
+
+	// Dead-letter handling (ADR-0004's documented gap): a message that
+	// fails processing is published to <topic>.dlq instead of only being
+	// logged. Wired the same way EVENT_PUBLISHER is — only when
+	// EVENT_PUBLISHER=kafka, since the DLQ writer needs the same brokers
+	// and there is no dead-letter concept for the log publisher's local/
+	// no-broker dev mode. AllowAutoTopicCreation mirrors every other
+	// writer in this codebase (outboundkafka.NewPublisher).
+	if getenv("EVENT_PUBLISHER", "log") == "kafka" {
+		dlqWriter := &kafkago.Writer{
+			Addr:                   kafkago.TCP(kafkaBrokers...),
+			Balancer:               &kafkago.LeastBytes{},
+			AllowAutoTopicCreation: true,
+		}
+		defer func() { _ = dlqWriter.Close() }()
+		consumer.DeadLetter = dlqWriter
+		logger.Info("dead-letter handling configured", "dlq_topic", inboundkafka.DeadLetterTopic(workReleasedTopic))
 	}
 
 	go func() {

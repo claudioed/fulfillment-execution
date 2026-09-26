@@ -39,13 +39,22 @@ var ErrUnknownPath = errors.New("pathcatalog: unknown process path id")
 // used as fulfillment-execution's task.Type value), the lower-cased
 // prefix family of real path_id values it recognizes, whether it feeds
 // directly into an execution task (true for every path in this fleet's
-// current single-building topology), and the capability set a station
-// must hold to work it.
+// current single-building topology), the capability set a station
+// must hold to work it, and the optional destination location role
+// process-path-management declares for it.
 type PathDefinition struct {
 	Id                   string
 	MatchPrefix          string
 	Direct               bool
 	RequiredCapabilities []string
+	// DestinationLocationRole is process-path-management's optional,
+	// immutable declaration of what kind of facility-layout LocationRole
+	// this path's completed work is destined for (that service's ADR
+	// 0006/0009) — one of "Drop", "WorkCenter", "Shipping", or "" when
+	// undeclared. Wiring only: this catalogue decodes and carries the
+	// value through Lookup for a future consumer to act on; nothing in
+	// this repo currently branches on it.
+	DestinationLocationRole string
 }
 
 // Catalogue is the validated, in-memory set of a building's declared

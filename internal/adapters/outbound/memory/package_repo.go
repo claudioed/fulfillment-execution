@@ -35,3 +35,23 @@ func (r *PackageRepo) FindById(_ context.Context, id shared.PackageId) (*pack.Pa
 	}
 	return p, nil
 }
+
+// FindByTaskId scans every stored package for a matching TaskId(). This
+// repo backs unit tests and local/no-DB runs only (small package counts),
+// so a linear scan is appropriate — the postgres adapter uses an indexed
+// column lookup instead. An empty taskId never matches anything, even a
+// package whose own TaskId() is also empty (pre-this-feature data) — see
+// pack.Rehydrate's doc comment.
+func (r *PackageRepo) FindByTaskId(_ context.Context, taskId shared.TaskId) (*pack.Package, error) {
+	if taskId == "" {
+		return nil, nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, p := range r.packages {
+		if p.TaskId() == taskId {
+			return p, nil
+		}
+	}
+	return nil, nil
+}

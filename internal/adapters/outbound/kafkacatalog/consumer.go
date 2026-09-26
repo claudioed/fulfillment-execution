@@ -73,12 +73,17 @@ type envelope struct {
 // pathData is the payload shape for all three event types on Topic.
 // RequiredCapabilities/MatchPrefix are absent (not empty-arrayed) on a
 // ProcessPathDeactivated event — see process-path-management's own
-// publisher doc comment.
+// publisher doc comment. DestinationLocationRole mirrors that service's
+// ProcessPathData.DestinationLocationRole wire field
+// (`destination_location_role`, omitempty) — absent (not
+// empty-stringed) for a path with no declared destination role, which
+// unmarshal already leaves as pathData's own zero value "".
 type pathData struct {
-	PathId               string   `json:"path_id"`
-	MatchPrefix          string   `json:"match_prefix"`
-	Direct               bool     `json:"direct"`
-	RequiredCapabilities []string `json:"required_capabilities"`
+	PathId                  string   `json:"path_id"`
+	MatchPrefix             string   `json:"match_prefix"`
+	Direct                  bool     `json:"direct"`
+	RequiredCapabilities    []string `json:"required_capabilities"`
+	DestinationLocationRole string   `json:"destination_location_role"`
 }
 
 // Reader is the subset of *kafkago.Reader this Consumer needs, so tests
@@ -388,10 +393,11 @@ func (c *Consumer) applyUpsert(data pathData) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.paths[strings.ToUpper(data.PathId)] = pathcatalog.PathDefinition{
-		Id:                   data.PathId,
-		MatchPrefix:          data.MatchPrefix,
-		Direct:               data.Direct,
-		RequiredCapabilities: data.RequiredCapabilities,
+		Id:                      data.PathId,
+		MatchPrefix:             data.MatchPrefix,
+		Direct:                  data.Direct,
+		RequiredCapabilities:    data.RequiredCapabilities,
+		DestinationLocationRole: data.DestinationLocationRole,
 	}
 }
 

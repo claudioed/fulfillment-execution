@@ -5,7 +5,7 @@
 > follows real industry-standard patterns and terminology (WMS/WES/WCS,
 > pull-based dispatch, CloudEvents, RFC 7807, hexagonal architecture) but is
 > **not a production system** and is **not affiliated with, endorsed by, or
-> representative of Amazon or any other company**.
+> representative of any real-world company**.
 
 The task-lifecycle core bounded context for Pick, Pack, and SLAM. Downstream
 of Work Planning (which releases work); issues commands to WCS/equipment.
