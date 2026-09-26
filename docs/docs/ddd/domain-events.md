@@ -3,12 +3,12 @@ id: domain-events
 title: Domain events
 sidebar_label: Domain events
 sidebar_position: 3
-description: All nine past-tense domain events raised by this bounded context, which aggregate raises each, what triggers it, and which are actually published outside the process today.
+description: All thirteen past-tense domain events raised by this bounded context, which aggregate raises each, what triggers it, and which are actually published outside the process today.
 ---
 
 # Domain events
 
-Nine past-tense facts, all defined in `internal/domain/shared/events.go`.
+Thirteen past-tense facts, all defined in `internal/domain/shared/events.go`.
 Every one satisfies the same tiny interface:
 
 ```go
@@ -30,19 +30,25 @@ for the wire happens in the outbound adapter, never on the event itself. See
 | `TaskClaimed` | Task | `ClaimNext` leases a task to a station | `TaskId`, `StationId` | No — in-process only |
 | `LeaseExpired` | Task | `ExpireLeases` frees a task whose lease lapsed | `TaskId` | No — in-process only |
 | `TaskCompleted` | Task | `CompleteTask` succeeds | `TaskId`, `StationId` | **Yes** — Kafka, `warehouse.fulfillment.events` |
+| `TaskCPTMissed` | Task | `SweepCPTMisses` finds an open task at or past its CPT | `TaskId`, `OrderRef`, `TaskType`, `CPT` | **Yes** — Kafka, `warehouse.fulfillment.events` ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |
 | `ItemPicked` | Task | *(defined; not raised today — see below)* | `TaskId` | No |
 | `PackageSealed` | Package | `SealPackage` seals a carton | `PackageId` | No — in-process only |
 | `WeightDiscrepancyDetected` | Package | SLAM finds actual weight outside tolerance | `PackageId`, `ExpectedWeight`, `ActualWeight` | No — in-process only |
 | `LabelApplied` | Package | SLAM passes and the shipping label is applied | `PackageId` | No — in-process only |
+| `PackageManifested` | Package | SLAM passes (raised alongside `LabelApplied`) | `PackageId`, `OrderRef` | **Yes** — Kafka, `warehouse.fulfillment.events` ([ADR-0025](../adr/0025-cpt-missed-sweep-and-package-manifested.md)) |
 | `PackageDiverted` | Package | SLAM fails and the package is routed off the standard path | `PackageId` | No — in-process only |
+| `ItemArrivedAtRebin` | OrderConsolidation | `ArriveAtRebin` records a line arrival | `OrderRef`, `LineId` | No — in-process only, not in `apis/asyncapi.yaml` |
+| `OrderConsolidated` | OrderConsolidation | The last required line arrives and the PACK task is created | `OrderRef` | No — in-process only, not in `apis/asyncapi.yaml` |
 
 :::caution Published ≠ defined
-Only **`TaskCompleted`** is currently carried outside the process. The other
-eight go to `ports.EventPublisher`, which by default is the log publisher —
-they are real domain events with real subscribers *in process*, but they are
-not part of the integration contract yet. `apis/asyncapi.yaml` documents all
-nine as the full catalogue and says so per message; this table is the same
-truth in one place.
+Only **`TaskCompleted`, `TaskCPTMissed` and `PackageManifested`** are carried
+onto the integration topic — the allowlist in
+`internal/adapters/outbound/kafka/publisher.go` is the source of truth. The
+analytics publisher separately forwards a projection-relevant subset to
+`warehouse.fulfillment.analytics` ([ADR-0012](../adr/0012-analytical-data-product.md)).
+Everything else goes only to the in-process publisher. `apis/asyncapi.yaml`
+documents eleven of the thirteen (all but the two Rebin events) and marks
+publication status per message; this table is the same truth in one place.
 
 `ItemPicked` is the one event that is defined and tested but never raised by
 any use case. The Pick path is currently modelled at task granularity (claim →
@@ -60,16 +66,23 @@ flowchart LR
     CMP["CompleteTask"] --> TCP["TaskCompleted"]
     SP["SealPackage"] --> PS["PackageSealed"]
     RS["RunSlam"] -->|within tolerance| LA["LabelApplied"]
+    RS -->|within tolerance| PM["PackageManifested"]
     RS -->|outside tolerance| WD["WeightDiscrepancyDetected"]
     RS -->|outside tolerance| PD["PackageDiverted"]
+    SW["SweepCPTMisses"] --> CM["TaskCPTMissed"]
+    AR["ArriveAtRebin"] --> IA["ItemArrivedAtRebin"]
+    AR -->|last line| OC["OrderConsolidated"]
     TCP ==>|Kafka| K[("warehouse.fulfillment.events")]
+    CM ==>|Kafka| K
+    PM ==>|Kafka| K
 ```
 
-`RegisterStation` and `GetQueueDepth` raise **nothing**. Registering a station
-is an operational action with no fact in the existing nine that fits it, and
-the deliberate choice was not to invent a tenth event just for symmetry — an
-event catalogue padded with facts nobody consumes is worse than a short honest
-one. `GetQueueDepth` is a pure read.
+`RegisterStation`, `CheckInStation`, `CheckOutStation`, `RenewLease` and the
+three reads (`GetQueueDepth`, `GetTasksByOrderRef`, `GetInstalledCapacity`)
+raise **nothing**. Registering or staffing a station is an operational action
+with no existing fact that fits it, and the deliberate choice was not to
+invent events just for symmetry — an event catalogue padded with facts nobody
+consumes is worse than a short honest one.
 
 ## The one event with two facts
 
@@ -123,8 +136,8 @@ on `type` without opening `data`.
 The Kafka publisher in `internal/adapters/outbound/kafka/publisher.go` today
 writes the **older flat platform envelope**
 (`event_id` / `event_type` / `occurred_at` / `source` / `data`) to topic
-**`warehouse.fulfillment.events`**, and that is what `wes-work-planning`'s
-consumer actually reads. The AsyncAPI document describes the target contract;
+**`warehouse.fulfillment.events`**, and that is what `wes-work-planning`,
+`labor-performance` and `order-management` actually read. The AsyncAPI document describes the target contract;
 the code has not migrated to it yet. Both the channel name and the envelope
 shape differ.
 
@@ -177,7 +190,8 @@ domain event.
 
 [ADR-0010](../adr/0010-package-segregation-and-sort-lane.md) made the
 identical judgement call for `Package.SortLane()`: `PackageSealed` and
-`LabelApplied` still carry only `PackageId`. `SortLane` is fully visible
+`LabelApplied` still carry only `PackageId` (and `PackageManifested`, added
+later by ADR-0025, carries only `PackageId` + `OrderRef`). `SortLane` is fully visible
 on the `POST /tasks/{id}/seal-package` response's `sortLane` field, which
 is where anything needing it reads it today — there is no in-process
 consumer of `PackageSealed`/`LabelApplied` that needs the value on the

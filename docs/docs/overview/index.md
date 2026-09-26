@@ -76,9 +76,10 @@ workforce planning.
   lease-expiry edge drawn explicitly.
 - **[Architecture](./architecture.md)** — hexagonal layering, the real package
   map, and the fitness tests that keep it honest.
-- **[Running locally](./running-locally.md)** — in-memory in one command;
+- **[Running locally](./running-locally.md)** — in-memory with just a
+  process-path catalogue file;
   Postgres and Kafka when you want the real thing.
-- **[API Reference](../api-reference/index.md)** — all ten endpoints,
+- **[API Reference](../api-reference/index.md)** — every REST endpoint,
   generated from the real `apis/openapi.yaml`.
 - **[Architecture Decision Records](../adr/index.md)** — why it is built this
   way, reconstructed from the decisions actually made in this repo.

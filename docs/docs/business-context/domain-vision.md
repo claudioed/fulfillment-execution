@@ -90,7 +90,8 @@ anywhere else in the platform:
 That is exactly why the `WorkReleased` consumer **translates** rather than
 deserialising into a shared type. `WorkReleased.data.work_unit_id` becomes this
 context's `orderRef`; `data.cpt` becomes a `shared.CPT`; `data.path_id` is
-mapped, by prefix convention, to a `task.Type`. Nothing crosses the boundary
+resolved through the process-path catalogue to a `task.Type` and its required
+capabilities. Nothing crosses the boundary
 as a shared struct. That translation step is the Anti-Corruption Layer.
 
 ## What this context deliberately refuses to do

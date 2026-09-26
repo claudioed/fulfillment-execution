@@ -1,10 +1,10 @@
 # API Surface & Cross-Service Integration
 
-## REST API (inbound adapter) — 14 operations, `apis/openapi.yaml`
+## REST API (inbound adapter) — 15 operations in `apis/openapi.yaml`, 16 routes on the router
 
 - POST /tasks                                 -> CreateTask
 - GET  /tasks?orderRef=                       -> GetTasksByOrderRef
-- POST /stations                              -> RegisterStation
+- POST /stations                              -> RegisterStation (optional `locationCode`, ADR-0024)
 - POST /stations/{stationId}/claim-next       -> ClaimNext
 - POST /stations/{stationId}/check-in         -> CheckInStation
 - POST /stations/{stationId}/check-out        -> CheckOutStation
@@ -17,6 +17,15 @@
 - POST /tasks/expire-leases                   -> ExpireLeases
 - POST /tasks/sweep-cpt-misses                 -> SweepCPTMisses (ADR-0025)
 - GET  /healthz
+- POST /rebin/arrivals                        -> ArriveAtRebin (ADR-0016) — registered in
+  `internal/adapters/inbound/http/router.go` but **not declared in
+  `apis/openapi.yaml`**, so it has no generated reference page. Known
+  spec gap; fix the spec (then regenerate) rather than hand-writing docs.
+
+`cmd/fulfillment-reports` serves a separate read-only surface
+(`GET /reports/throughput`, `GET /reports/throughput/freshness`,
+`GET /healthz`) — see `analytics-data-product.md`; it is not in
+`apis/openapi.yaml` either.
 
 JSON DTOs live in the http adapter; never leak domain structs. Errors are
 RFC 7807 `application/problem+json` (ADR-0005).
@@ -46,10 +55,10 @@ and this service's own `fulfillment-mfe` remote).
 
 ADR-0021 introduced static-bearer-key REST identity with read/read-write
 scopes across the fleet; ADR-0022 **removed** the REST + MCP static-bearer
-auth layer from this service again (chore/remove-security-layer, merged to
-develop). Check `docs/docs/adr/0022-remove-rest-mcp-auth.md` for current
-status before assuming any bearer-auth requirement is live — do not
-resurrect ADR-0021's design without re-checking this.
+auth layer from this service again and supersedes ADR-0021. Every REST
+route (OLTP and `/reports/*`) and every MCP tool is unauthenticated today —
+there is no auth middleware and no `AUTH_MODE`/`*_KEY` env var in any
+`cmd/*/main.go`. Do not resurrect ADR-0021's design without a new ADR.
 
 ## Events published (AsyncAPI: `apis/asyncapi.yaml`)
 
@@ -70,8 +79,18 @@ below for what's actually on the wire).
 | `WeightDiscrepancyDetected` | `package.WeightDiscrepancyDetected` | `packageId`, `expectedWeight`, `actualWeight` | No |
 | `LabelApplied` | `package.LabelApplied` | `packageId` | No |
 | `PackageDiverted` | `package.PackageDiverted` | `packageId` | No |
-| `TaskCPTMissed` | n/a (not yet in the AsyncAPI CloudEvents catalogue) | `task_id`, `order_ref`, `task_type`, `cpt` | **Yes** (ADR-0025) |
-| `PackageManifested` | n/a (not yet in the AsyncAPI CloudEvents catalogue) | `package_id`, `order_ref` | **Yes** (ADR-0025) |
+| `TaskCPTMissed` | `task.TaskCPTMissed` | `taskId`, `orderRef`, `taskType`, `cpt` | **Yes** (ADR-0025) |
+| `PackageManifested` | `package.PackageManifested` | `packageId`, `orderRef` | **Yes** (ADR-0025) |
+
+On the wire today (flat envelope, see divergence below) these three are
+the only events `outbound/kafka/publisher.go` forwards to
+`warehouse.fulfillment.events` — the publisher allowlist, not the domain
+event list, is the source of truth. Known consumers of that topic:
+`wes-work-planning` and `labor-performance` (`TaskCompleted`), and
+`order-management`'s `RepromiseOrder` consumer (`TaskCPTMissed`,
+`PackageManifested`). `ItemArrivedAtRebin` and `OrderConsolidated`
+(ADR-0016) are domain events too, but are neither in the AsyncAPI
+catalogue nor forwarded to either topic.
 
 `workUnitId` on `TaskCompleted` is what makes the feedback loop to Work
 Planning work: the publisher looks the task back up through `ports.TaskRepo`
@@ -89,14 +108,27 @@ found for `taskType`). `taskType` is read directly off the same `Task`
 | Source context | Topic | `event_type` | Effect here |
 | --- | --- | --- | --- |
 | `wes-work-planning` | `warehouse.work-planning.events` | `WorkReleased` | Creates a `Task` via `CreateTask` |
+| `process-path-management` | `warehouse.process-path-management.events` | catalogue events | Only when `PATH_CATALOGUE_SOURCE=kafka` (default `file`): replays into the in-memory process-path catalogue (`outbound/kafkacatalog`) |
 
 `WorkReleased` arrives in the flat platform envelope (not CloudEvents); the
 Anti-Corruption Layer maps `data.path_id` -> `task.Type` via the process-path
 catalogue (ADR-0017: `pick*`->PICK, `pack*`->PACK, `slam*`->SLAM, `rebin*`->
 REBIN by prefix match, not exact match — a real path id looks like
-`pick-zone-a`, not bare `pick`). Idempotent via `ProcessedEvents.MarkProcessed`
+`pick-zone-a`, not bare `pick`). An unknown `path_id` is a hard handling
+error — there is no default-to-PICK. Idempotent via `ProcessedEvents.MarkProcessed`
 (Postgres primary-key-backed dedup; in-memory adapter uses a mutex map).
-Consumer group: `fulfillment-execution`.
+Consumer group: `WORK_RELEASED_CONSUMER_GROUP`, default `fulfillment-execution`.
+
+## Outbound synchronous calls (both permissive by default)
+
+| Target | Endpoint | Enabled by | Used by |
+| --- | --- | --- | --- |
+| `inventory-storage` | `GET /products/{sku}/classification` | `PRODUCT_CLASSIFICATION_MODE=http` + `INVENTORY_STORAGE_BASE_URL` | `SealPackage` per-SKU DOT hazard lookup (ADR-0010) |
+| `facility-layout` | `GET /locations/{locationCode}` | `LOCATION_ROLE_MODE=http` + `FACILITY_LAYOUT_BASE_URL` | `RegisterStation` WorkCenter role check (ADR-0024) |
+
+Inbound synchronous callers: `workforce-management` calls
+`GET /capacity/{capability}` (ADR-0018); the console BFF calls
+`GET /tasks?orderRef=`; `warehouse-ops-agent` calls the MCP server.
 
 ## KNOWN DIVERGENCE: AsyncAPI spec vs. actual wire format
 

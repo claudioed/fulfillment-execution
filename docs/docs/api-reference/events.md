@@ -83,7 +83,9 @@ per service via `KAFKA_BROKERS`.
 
 ## Events published
 
-All eleven domain events are in the catalogue. **`TaskCompleted`,
+Eleven of the thirteen domain events are in the catalogue (the two Rebin
+events, `ItemArrivedAtRebin` and `OrderConsolidated`, are in-process only
+and not in `asyncapi.yaml`). **`TaskCompleted`,
 `TaskCPTMissed`, and `PackageManifested` are actually on the wire today**
 (the latter two added by ADR-0025) — the rest are documented as the
 intended contract and are in-process only, exactly as each message's own
@@ -165,10 +167,10 @@ Mapping into this context's model (the Anti-Corruption Layer):
 
 | From | To | How |
 | --- | --- | --- |
-| `data.path_id` | `task.Type` | prefix: `pick-*`→`PICK`, `pack-*`→`PACK`, `slam-*`→`SLAM`, default `PICK` |
+| `data.path_id` | `task.Type` | process-path catalogue lookup, longest `matchPrefix` wins (`pick-zone-a`→`PICK`); no match is a hard error, never a default ([ADR-0017](../adr/0017-process-path-catalogue-as-configuration.md)) |
 | `data.work_unit_id` | `shared.OrderRef` | direct |
 | `data.cpt` | `shared.CPT` | RFC 3339 → `time.Time` |
-| *(from type)* | `shared.CapabilitySet` | `PICK`→`{pick}`, `PACK`→`{pack}`, `SLAM`→`{slam}` |
+| *(from the matched path)* | `shared.CapabilitySet` | the path definition's `requiredCapabilities` |
 | `data.ref` | *(unused)* | decoded but not mapped — `work_unit_id` is the correlation key |
 
 The consumer filters on `event_type == "WorkReleased"` and silently ignores
@@ -233,8 +235,8 @@ changes too.
 
 ## Smoke-testing the real thing
 
-With the shared broker from `~/warehouse-systems/docker-compose.kafka.yml`
-running:
+With the shared broker from the `warehouse-infra` kind cluster reachable at
+`localhost:9092`:
 
 ```bash
 # Consume: publish a WorkReleased and watch a Task appear

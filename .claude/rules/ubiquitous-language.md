@@ -26,7 +26,9 @@ touching `internal/domain/` or `internal/application/usecases/`.
 - **Fragile (packing hint)** — `Task.Fragile()` and the derived
   `Package.FragileHandling()`. Stamped onto the Task by `wes-work-planning`
   at release time (from `inventory-storage`'s `ProductClassification`, read
-  once upstream — this service never calls inventory-storage directly).
+  once upstream — this service never looks the fragile flag up itself; the
+  only direct inventory-storage call is the ADR-0010 hazard-class lookup
+  below).
   `SealPackage` derives `FragileHandling` from the owning task's flag, not a
   separate caller input. Affects packing/downstream sortation only — does
   not gate claiming.
@@ -72,6 +74,14 @@ touching `internal/domain/` or `internal/application/usecases/`.
   in `internal/application/ports/equipment.go` is a deliberately UNIMPLEMENTED
   interface (declares no methods yet) marking where a future WCS/equipment
   integration would attach, without pulling that tier into this workspace.
+- **Station location code (ADR-0024)** — `Station.LocationCode()` is an
+  optional facility-layout `LocationCode`. With `LOCATION_ROLE_MODE=http`,
+  `RegisterStation` looks the code up in facility-layout and rejects a
+  KNOWN non-WorkCenter role (`ErrStationLocationNotWorkCenter`, 422);
+  permissive by default (recorded unchecked).
+- **CPT missed (ADR-0025)** — `Task.IsCPTMissed(now)`: a task still open
+  (Pending or Claimed) at or past its CPT. Detected by the Clock-driven
+  `SweepCPTMisses`, not on a timer inside the aggregate.
 
 ## Aggregates & invariants (enforce in domain, unit-tested)
 
@@ -90,7 +100,9 @@ touching `internal/domain/` or `internal/application/usecases/`.
 
 TaskCreated, TaskClaimed, LeaseExpired, TaskCompleted, ItemPicked,
 PackageSealed, WeightDiscrepancyDetected, LabelApplied, PackageDiverted,
-TaskCPTMissed, PackageManifested.
+TaskCPTMissed, PackageManifested, ItemArrivedAtRebin, OrderConsolidated
+(13, all in `internal/domain/shared/events.go`; the last two are ADR-0016's
+Rebin events and are in-process only — not in `apis/asyncapi.yaml`).
 
 Full AsyncAPI catalogue, publication status per event, and the CloudEvents
 envelope are in `api-and-integration.md` — `TaskCompleted`, `TaskCPTMissed`,
@@ -100,7 +112,7 @@ two, closing the promise-feedback-loop half of order-management's ADR
 
 ## Use cases (application layer)
 
-1. CreateTask(type, cpt, ref, requiredCapabilities, fragile) -> Task in pool
+1. CreateTask(type, cpt, ref, requiredCapabilities, fragile, giftWrap) -> Task in pool
 2. ClaimNext(stationId, capabilities) -> leases + returns best-fit pending task
 3. RenewLease(taskId, stationId) -> extends lease
 4. CompleteTask(taskId, stationId) -> TaskCompleted (validates claim ownership)
@@ -118,3 +130,13 @@ two, closing the promise-feedback-loop half of order-management's ADR
     tracking for labor-performance attribution (ADR-0014)
 11. SweepCPTMisses(now) -> raises TaskCPTMissed for every still-open task
     past its CPT (Clock-driven, re-fires every pass while overdue; ADR-0025)
+12. RegisterStation(stationId, capabilities, locationCode) -> creates or
+    re-registers (idempotent) a Station; optional WorkCenter role check (ADR-0024)
+13. GetTasksByOrderRef(orderRef) -> every task for one WorkUnit id, read-only
+    (backs `GET /tasks?orderRef=`, ADR-0013)
+14. ArriveAtRebin(orderRef, lineId, ...) -> records a line arrival on
+    OrderConsolidation (ItemArrivedAtRebin); once complete, creates the
+    order's PACK task via CreateTask and raises OrderConsolidated (ADR-0016)
+
+`internal/application/usecases/` holds exactly these 15 structs (counting
+CheckInStation and CheckOutStation separately).

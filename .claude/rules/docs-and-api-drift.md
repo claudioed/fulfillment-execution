@@ -17,15 +17,28 @@ generator.
 
 ## How to check for drift
 
+CI already does this on every PR: the `docs-api-drift` job in
+`.github/workflows/ci.yml` runs, inside `docs/`,
+
+```bash
+npm ci
+npm run clean-api-docs fulfillment && npm run gen-api-docs fulfillment
+git diff --exit-code -- docs/api-reference/rest
+```
+
+and fails if regeneration changes anything. Run the same three commands
+locally to reproduce it. Note it only guards `apis/openapi.yaml` — a route
+that exists on the chi router but is missing from the spec (today:
+`POST /rebin/arrivals`) is invisible to it. Manual cross-checks:
+
 1. Count `operationId:` occurrences in `apis/openapi.yaml` vs. the number of
    `*.api.mdx` files (excluding `*.info.mdx` and `*.tag.mdx`) in
    `docs/docs/api-reference/rest/`. Mismatch = stale docs.
 2. Cross-check each operationId against the sidebar
    (`docs/docs/api-reference/rest/sidebar.ts`) and each schema in
    `components/schemas` against `docs/docs/api-reference/rest/schemas/`.
-3. `git log --oneline -- apis/openapi.yaml` vs.
-   `git log --oneline -- docs/docs/api-reference/rest` — a spec commit with
-   no matching "regenerate" doc commit after it is the smoking gun.
+3. Diff the routes in `internal/adapters/inbound/http/router.go` against
+   the spec's `paths:` — the drift job cannot see a route the spec omits.
 
 ## How to regenerate (when stale)
 
@@ -72,3 +85,12 @@ does not deploy the live site by itself; it deploys on the next
 `develop`->`main` GitFlow release merge (or via manual
 `workflow_dispatch`). Don't expect the live site to update immediately after
 merging a docs PR against `develop`.
+
+The Pages job runs `npm ci`, `npm run typecheck` (`tsc`) and `npm run build`,
+and nothing on a PR runs the typecheck or the site build — so run both
+locally before merging any change under `docs/`. `docs/package.json` pins
+TypeScript `~7.0`, which removed the `baseUrl` compiler option (`error
+TS5102`); `@docusaurus/tsconfig` still sets `"baseUrl": "."`, so
+`docs/tsconfig.json` must override it with `"baseUrl": null` and restate the
+`@site/*` path mapping itself. Deleting the local `baseUrl` line alone is not
+enough — the inherited one still fails `tsc`.

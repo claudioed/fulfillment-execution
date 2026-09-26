@@ -11,12 +11,14 @@ addition inside an already-decided architecture doesn't.
 `docs/docs/adr/NNNN-kebab-case-title.md`, four-digit zero-padded,
 sequential — check the highest existing number
 (`git ls-tree --name-only origin/develop -- docs/docs/adr/` and pick the
-next integer, never reuse or guess). This repo is currently at ADR-0024
-(`0024-station-location-code-and-workcenter-role-check.md`) — the next
-one is 0025. `docs/docs/adr/index.md` explains the format to readers AND
-carries the full numbered table; add your new row there too (step 5
-below) or the sidebar/table silently omits the new record even though
-the file itself renders fine.
+next integer, never reuse or guess). This repo is currently at ADR-0026
+(`0026-on-time-to-cpt-kpi.md`) — the next one is 0027.
+`docs/docs/adr/index.md` explains the format to readers AND carries the
+full numbered table; add your new row there too, and add the doc id to
+the ADR category in `docs/sidebars.ts` — otherwise the sidebar/table
+silently omits the new record even though the file itself renders fine.
+If the new ADR supersedes an older one, update the older row's Status
+column in the index as well.
 
 ## Frontmatter (Docusaurus needs all five fields)
 
@@ -110,14 +112,16 @@ site is read independently.
 ```bash
 cd docs
 npm ci
-npm run build   # onBrokenLinks / onBrokenAnchors are both 'throw' — this
-                 # WILL fail if the frontmatter/slug is wrong or a
-                 # cross-reference link is broken
+npm run typecheck  # docs.yml runs this before the build
+npm run build      # onBrokenLinks / onBrokenAnchors are both 'throw' — this
+                   # WILL fail if the frontmatter/slug is wrong or a
+                   # cross-reference link is broken
 ```
 
 A broken ADR link or malformed frontmatter fails the build with a clear
 Docusaurus error, not a silent 404 — always run this locally before
-opening the PR. This repo's `.github/workflows/docs.yml` deploys the
-docs site but does not currently gate ADR frontmatter errors on the PR
-itself the way `docs-api-drift` gates OpenAPI drift — running the build
-locally is the only check catching this before merge.
+opening the PR. This repo's `.github/workflows/docs.yml` (typecheck +
+build + Pages deploy) runs only on pushes to `main`, and the PR-time
+`docs-api-drift` job in `ci.yml` only regenerates the OpenAPI reference —
+neither builds the site on a PR, so running the build locally is the only
+check catching this before merge.
